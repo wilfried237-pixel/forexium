@@ -2264,50 +2264,51 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
                         {langue === 'fr' ? 'réduire' : 'collapse'}
                       </button>
                     </div>
-                  <div className={`px-3 pb-3 pt-2 space-y-3 ${dark ? 'bg-transparent' : 'bg-white'}`}>
-                    <div>
-                      <label className={`block text-xs font-medium mb-1.5 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>
-                        {langue === 'fr' ? `XAF / ${deviseVente}` : `XAF / ${deviseVente}`}
-                      </label>
-                      <input type="text" inputMode="numeric"
-                        placeholder="0"
-                        value={tauxCache}
-                        onChange={handleIntInput(setTauxCache)}
-                        className={`w-full px-3 py-2.5 rounded-lg border text-sm outline-none transition-all ${dark ? 'border-white/[0.08] bg-white/[0.03] text-white placeholder-white/20' : 'border-gray-200 bg-white'} focus:border-gray-300`} />
-                    </div>
-                    <div className={`rounded-lg p-2.5 ${dark ? 'bg-white/[0.02] border border-white/[0.05]' : 'bg-gray-50 border border-gray-100'}`}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className={`text-[10px] font-medium ${dark ? 'text-gray-500' : 'text-gray-400'}`}>{langue === 'fr' ? 'Répartition' : 'Split'}</span>
-                        <label className="flex items-center gap-1.5 cursor-pointer">
-                          <span className={`text-[10px] ${dark ? 'text-gray-600' : 'text-gray-400'}`}>{langue === 'fr' ? 'personnaliser' : 'customize'}</span>
-                          <div onClick={() => setCustomShareC(!customShareC)}
-                            className={`w-7 h-3.5 rounded-full transition-all cursor-pointer relative ${customShareC ? (dark?'bg-gray-500':'bg-gray-400') : dark?'bg-gray-700':'bg-gray-200'}`}>
-                            <div className="absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white shadow transition-all" style={{ left: customShareC ? '14px' : '2px' }} />
-                          </div>
+                    <div className={`px-3 pb-3 pt-2 space-y-3 ${dark ? 'bg-transparent' : 'bg-white'}`}>
+                      <div>
+                        <label className={`block text-xs font-medium mb-1.5 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>
+                          {langue === 'fr' ? `XAF / ${deviseVente}` : `XAF / ${deviseVente}`}
                         </label>
+                        <input type="text" inputMode="numeric"
+                          placeholder="0"
+                          value={tauxCache}
+                          onChange={handleIntInput(setTauxCache)}
+                          className={`w-full px-3 py-2.5 rounded-lg border text-sm outline-none transition-all ${dark ? 'border-white/[0.08] bg-white/[0.03] text-white placeholder-white/20' : 'border-gray-200 bg-white'} focus:border-gray-300`} />
                       </div>
-                      {customShareC ? (
-                        <div>
-                          <input type="range" min="0" max="100" value={porteurPctC}
-                            onChange={e => setPorteurPctC(parseInt(e.target.value))}
-                            className="w-full h-1.5 rounded appearance-none cursor-pointer" style={{ accentColor: dark?'#6B7280':'#9CA3AF' }} />
-                          <div className="flex justify-between text-[10px] mt-1">
-                            <span className={dark?'text-gray-500':'text-gray-400'}>{t.partner} {porteurPctC}%</span>
-                            <span className={dark?'text-gray-500':'text-gray-400'}>{t.associate} {100-porteurPctC}%</span>
-                          </div>
+                      <div className={`rounded-lg p-2.5 ${dark ? 'bg-white/[0.02] border border-white/[0.05]' : 'bg-gray-50 border border-gray-100'}`}>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className={`text-[10px] font-medium ${dark ? 'text-gray-500' : 'text-gray-400'}`}>{langue === 'fr' ? 'Répartition' : 'Split'}</span>
+                          <label className="flex items-center gap-1.5 cursor-pointer">
+                            <span className={`text-[10px] ${dark ? 'text-gray-600' : 'text-gray-400'}`}>{langue === 'fr' ? 'personnaliser' : 'customize'}</span>
+                            <div onClick={() => setCustomShareC(!customShareC)}
+                              className={`w-7 h-3.5 rounded-full transition-all cursor-pointer relative ${customShareC ? (dark?'bg-gray-500':'bg-gray-400') : dark?'bg-gray-700':'bg-gray-200'}`}>
+                              <div className="absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white shadow transition-all" style={{ left: customShareC ? '14px' : '2px' }} />
+                            </div>
+                          </label>
                         </div>
-                      ) : (
-                        <div className="flex justify-between text-[10px]">
-                          <span className={dark?'text-gray-500':'text-gray-400'}>{t.partner} {transaction.porteurPctCache || transaction.porteurPct || 70}%</span>
-                          <span className={dark?'text-gray-500':'text-gray-400'}>{t.associate} {100-(transaction.porteurPctCache || transaction.porteurPct || 70)}%</span>
+                        {customShareC ? (
+                          <div>
+                            <input type="range" min="0" max="100" value={porteurPctC}
+                              onChange={e => setPorteurPctC(parseInt(e.target.value))}
+                              className="w-full h-1.5 rounded appearance-none cursor-pointer" style={{ accentColor: dark?'#6B7280':'#9CA3AF' }} />
+                            <div className="flex justify-between text-[10px] mt-1">
+                              <span className={dark?'text-gray-500':'text-gray-400'}>{t.partner} {porteurPctC}%</span>
+                              <span className={dark?'text-gray-500':'text-gray-400'}>{t.associate} {100-porteurPctC}%</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex justify-between text-[10px]">
+                            <span className={dark?'text-gray-500':'text-gray-400'}>{t.partner} {transaction.porteurPctCache || transaction.porteurPct || 70}%</span>
+                            <span className={dark?'text-gray-500':'text-gray-400'}>{t.associate} {100-(transaction.porteurPctCache || transaction.porteurPct || 70)}%</span>
+                          </div>
+                        )}
+                      </div>
+                      {tauxC > 0 && (
+                        <div className={`p-2 rounded-lg text-[10px] font-medium ${dark ? 'bg-green-900/20 text-green-400' : 'bg-green-50 text-green-700'}`}>
+                          ✓ {langue === 'fr' ? 'Enregistrement définitif à la sauvegarde' : 'Will commit on save'}
                         </div>
                       )}
                     </div>
-                    {tauxC > 0 && (
-                      <div className={`p-2 rounded-lg text-[10px] font-medium ${dark ? 'bg-green-900/20 text-green-400' : 'bg-green-50 text-green-700'}`}>
-                        ✓ {langue === 'fr' ? 'Enregistrement définitif à la sauvegarde' : 'Will commit on save'}
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
