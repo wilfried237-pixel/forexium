@@ -4112,23 +4112,23 @@ export default function App() {
       // Recalculer la chaîne stock avant/après pour tous les mouvements USDT
       const sorted = [...transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
       let stockCourant = 0;
-      const withStock = sorted.map(t => {
-        if (t.type === 'achat' && (t.devise === 'USDT' || !t.deviseVente)) {
-          const qte = t.quantite || 0;
+      const withStock = sorted.map(row => {
+        if (row.type === 'achat' && (row.devise === 'USDT' || !row.deviseVente)) {
+          const qte = row.quantite || 0;
           const avant = stockCourant;
           stockCourant = avant + qte;
-          return { ...t, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
-        } else if (t.type === 'vente') {
-          const conso = t.usdtConsomme || 0;
+          return { ...row, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
+        } else if (row.type === 'vente') {
+          const conso = row.usdtConsomme || 0;
           const avant = stockCourant;
           stockCourant = Math.max(0, avant - conso);
-          return { ...t, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
+          return { ...row, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
         }
-        return t;
+        return row;
       });
       // Remettre dans l'ordre original (DESC date)
-      const transactionsWithStock = transactions.map(t =>
-        withStock.find(w => w.id === t.id) || t
+      const transactionsWithStock = transactions.map(row =>
+        withStock.find(w => w.id === row.id) || row
       );
 
       setData({
@@ -4284,14 +4284,14 @@ export default function App() {
     if (!tx) return;
 
     // Recalcul chaîne stock (validation locale avant d'envoyer à l'API)
-    const allTx = data.transactions.map(t => t.id === txId ? { ...t, ...changes } : t);
+    const allTx = data.transactions.map(row => row.id === txId ? { ...row, ...changes } : row);
     const sorted = [...allTx].sort((a, b) => new Date(a.date) - new Date(b.date));
     let stockCourant = 0;
     let cmupCourant  = 0;
-    const rebuilt = sorted.map(t => {
-      if (t.type === 'achat' && t.devise === 'USDT') {
-        const qte = t.quantite || 0;
-        const prixTotal = t.montant || 0;
+    const rebuilt = sorted.map(row => {
+      if (row.type === 'achat' && row.devise === 'USDT') {
+        const qte = row.quantite || 0;
+        const prixTotal = row.montant || 0;
         if (qte > 0) {
           const totalValeur = (stockCourant * cmupCourant) + prixTotal;
           const totalQte = stockCourant + qte;
@@ -4299,14 +4299,14 @@ export default function App() {
         }
         const avant = stockCourant;
         stockCourant = avant + qte;
-        return { ...t, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
-      } else if (t.type === 'vente') {
-        const usdtConso = t.usdtConsomme || 0;
+        return { ...row, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
+      } else if (row.type === 'vente') {
+        const usdtConso = row.usdtConsomme || 0;
         const avant = stockCourant;
         stockCourant = Math.max(0, stockCourant - usdtConso);
-        return { ...t, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
+        return { ...row, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
       }
-      return t;
+      return row;
     });
 
     const negatif = rebuilt.find(t => t.stockUsdt_apres !== undefined && t.stockUsdt_apres < -0.000001);
