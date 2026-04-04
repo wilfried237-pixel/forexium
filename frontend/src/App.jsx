@@ -4077,7 +4077,12 @@ export default function App() {
         date: new Date(tx.date || tx.date_enregistrement),
         dateEnregistrement: tx.date_enregistrement ? new Date(tx.date_enregistrement) : new Date(tx.date),
         dateModification: tx.date_modification ? new Date(tx.date_modification) : null,
-        montant: parseFloat(tx.montant || tx.prix_achat_total || 0),
+        montant: parseFloat(
+          tx.montant ||
+          tx.prix_achat_total ||
+          tx.valeur_vente_visible ||   // ventes : valeur encaissée
+          0
+        ),
         quantite: parseFloat(tx.quantite || 0),
         taux: parseFloat(tx.taux_achat_unitaire || 0),
         devise: tx.devise || 'USDT',
