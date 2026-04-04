@@ -3124,10 +3124,13 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
   const [chartMetric, setChartMetric] = useState('profit');
   const [showRealPartner, setShowRealPartner] = useState(false);
 
-  // Écouter le toggle secret du tableau partenaires
+  const isPorteur = user.role === 'porteur';
+
+  // Écouter le toggle secret du tableau partenaires (Ctrl+Shift+H)
   React.useEffect(() => {
+    if (!isPorteur) return;
     const handler = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'H' && isPorteur) {
+      if (e.ctrlKey && e.shiftKey && e.key === 'H') {
         e.preventDefault();
         setShowRealPartner(v => !v);
       }
@@ -3135,8 +3138,6 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [isPorteur]);
-
-  const isPorteur = user.role === 'porteur';
 
   const visibleTransactions = isPorteur
     ? data.transactions
