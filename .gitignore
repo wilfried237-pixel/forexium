@@ -15,7 +15,12 @@ frontend/.env
 .vscode/
 .idea/
 *.swp
-*.swo
+*.swogit init
+git add .
+git commit -m "Initial commit"
+git remote add origin https://github.com/votreusername/forexium.git
+git branch -M main
+git push -u origin main
 
 # OS
 .DS_Store
