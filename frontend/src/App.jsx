@@ -3141,11 +3141,14 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
 
   const visibleTransactions = isPorteur
     ? data.transactions
-    : data.transactions.filter(tx => tx.statut === 'committed' || tx.statut === 'assoc_pending' || !tx.statut);
+    : data.transactions; // associé voit toutes les transactions des deux utilisateurs
 
-  const ventesCommitted = visibleTransactions.filter(tx => tx.type === 'vente' && (tx.beneficeVisible != null || tx.profit != null));
+  const ventesCommitted = visibleTransactions.filter(tx => tx.type === 'vente');
   const totalProfit = ventesCommitted.reduce((s, tx) => {
-    const benefice = isPorteur && tx.beneficeCachee != null ? tx.beneficeCachee : (tx.beneficeVisible || tx.profit || 0);
+    // Pour le porteur : utilise beneficeCachee seulement si réellement renseigné (> 0)
+    const benefice = isPorteur && tx.beneficeCachee > 0
+      ? tx.beneficeCachee
+      : (tx.beneficeVisible || tx.profit || 0);
     return s + benefice;
   }, 0);
 
@@ -3237,7 +3240,8 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
   const usdtInfo = data.devises.find(d => d.devise === 'USDT') || { quantite: 0, cmup: 0 };
   const totalVolume = visibleTransactions.reduce((s, tx) => s + (tx.montant || 0), 0);
   const totalVentes = visibleTransactions.filter(tx => tx.type === 'vente').length;
-  const pendingCount = data.transactions.filter(tx => tx.statut === 'pending').length;
+  const myTxCount = visibleTransactions.filter(tx => tx.userId === user.id).length;
+  const pendingCount = data.transactions.filter(tx => tx.statut === 'pending' || tx.statut === 'assoc_pending').length;
 
   // ── Palette thème ──
   const tk = {
@@ -3444,7 +3448,7 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
               label: 'Transactions',
               value: visibleTransactions.length,
               unit: '',
-              sub: `Vol. ${totalVolume.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF`,
+              sub: `${myTxCount} par moi · Vol. ${totalVolume.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF`,
               icon: <FileText size={18}/>, color: tk.purple, delta: null,
             },
           ].map((kpi, i) => (
@@ -3747,6 +3751,12 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                               {tx.fournisseur && ` · ${tx.fournisseur}`}
                               {tx.beneficiaire && ` · ${tx.beneficiaire}`}
                             </p>
+                            {tx.userName && (
+                              <p style={{ fontSize: 10, color: tk.faint, margin: '2px 0 0', display:'flex', alignItems:'center', gap:4 }}>
+                                <span style={{ width:5, height:5, borderRadius:'50%', background: tx.userId === user.id ? tk.accent : tk.blue, display:'inline-block', flexShrink:0 }}/>
+                                {tx.userName}
+                              </p>
+                            )}
 
                           </div>
                         </div>
@@ -3844,128 +3854,96 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                   <span>Associé {profitShare.associe}%</span>
                 </div>
               </div>
-              {[
-                { label:`${t.partner} (${profitShare.porteur}%)`, value:(totalProfit*profitShare.porteur/100), color:tk.accent, bg: dark?'#D4AF3710':'#FFFBEB' },
-                { label:`${t.associate} (${profitShare.associe}%)`, value:(totalProfit*profitShare.associe/100), color:tk.ink, bg: tk.cardB },
-              ].map((row,i) => (
-                <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 12px', borderRadius:10, background:row.bg, marginBottom:6 }}>
-                  <span style={{ fontSize:12, color:tk.sub }}>{row.label}</span>
-                  <span style={{ fontSize:14, fontWeight:800, color:row.color }}>{row.value.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF</span>
-                </div>
-              ))}
+              {(() => {
+                const toutesVentesRep = data.transactions.filter(tx => tx.type === 'vente');
+                const totalPorteurRep = toutesVentesRep.reduce((s, tx) =>
+                  s + (isPorteur && tx.beneficeCachee > 0 ? (tx.partPorteurCache || 0) : (tx.partPorteur || 0)), 0);
+                const totalAssocieRep = toutesVentesRep.reduce((s, tx) =>
+                  s + (isPorteur && tx.beneficeCachee > 0 ? (tx.partAssocieCache || 0) : (tx.partAssocie || 0)), 0);
+                return [
+                  { label:`${t.partner} (${profitShare.porteur}%)`, value: totalPorteurRep, color:tk.accent, bg: dark?'#D4AF3710':'#FFFBEB' },
+                  { label:`${t.associate} (${profitShare.associe}%)`, value: totalAssocieRep, color:tk.ink, bg: tk.cardB },
+                ].map((row,i) => (
+                  <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 12px', borderRadius:10, background:row.bg, marginBottom:6 }}>
+                    <span style={{ fontSize:12, color:tk.sub }}>{row.label}</span>
+                    <span style={{ fontSize:14, fontWeight:800, color:row.color }}>{row.value.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF</span>
+                  </div>
+                ));
+              })()}
             </div>
 
             {/* Tableau de Bord des Partenaires */}
             {(() => {
-              const allCommitted = data.transactions.filter(tx =>
-                tx.statut === 'committed' || tx.statut === 'porteur_pending' || tx.statut === 'pending' || tx.statut === 'assoc_pending' || !tx.statut
-              );
-              const ventesCommitted = allCommitted.filter(tx => tx.type === 'vente');
+              const toutesVentes = data.transactions.filter(tx => tx.type === 'vente');
 
-              // ── Profits VISIBLES (ce que les deux voient normalement) ──
-              const beneficeTotalVisible  = ventesCommitted.reduce((s, tx) => s + (tx.beneficeVisible || tx.profit || 0), 0);
-              const partPorteurVisible    = ventesCommitted.reduce((s, tx) => s + (tx.partPorteur || 0), 0);
-              const partAssocieVisible    = ventesCommitted.reduce((s, tx) => s + (tx.partAssocie || 0), 0);
+              // ── Vue VISIBLE ──────────────────────────────────────────────
+              const partPorteurVisible   = toutesVentes.reduce((s, tx) => s + (tx.partPorteur || 0), 0);
+              const partAssocieVisible   = toutesVentes.reduce((s, tx) => s + (tx.partAssocie || 0), 0);
+              const beneficeTotalVisible = toutesVentes.reduce((s, tx) => s + (tx.beneficeVisible || tx.profit || 0), 0);
 
-              // ── Répartitions post-vente (ventilations manuelles entre partenaires) ──
-              // partPorteurCache = montants reversés AU porteur depuis la part de l'associé (et vice versa)
-              const redistribVersPorteur  = ventesCommitted.reduce((s, tx) => s + (tx.partPorteurCache || 0), 0);
-              const redistribVersAssocie  = ventesCommitted.reduce((s, tx) => s + (tx.partAssocieCache || 0), 0);
+              // ── Vue RÉELLE (Ctrl+Shift+H) ────────────────────────────────
+              // Cumul correct : ventes SANS taux caché → valeur visible ; ventes AVEC → valeur cachée
+              // Ex : 50 visible + 10 visible = 60 visible | 50 visible + 12 caché = 62 réel
+              const partPorteurReel   = toutesVentes.reduce((s, tx) =>
+                s + (tx.beneficeCachee > 0 ? (tx.partPorteurCache || 0) : (tx.partPorteur || 0)), 0);
+              const partAssocieReel   = toutesVentes.reduce((s, tx) =>
+                s + (tx.beneficeCachee > 0 ? (tx.partAssocieCache || 0) : (tx.partAssocie || 0)), 0);
+              const beneficeTotalReel = toutesVentes.reduce((s, tx) =>
+                s + (tx.beneficeCachee > 0 ? tx.beneficeCachee : (tx.beneficeVisible || tx.profit || 0)), 0);
 
-              // ── Totaux consolidés visibles ──
-              const totalPorteurVisible   = partPorteurVisible + redistribVersPorteur;
-              const totalAssocieVisible   = partAssocieVisible + redistribVersAssocie;
-
-              // ── Profits RÉELS cachés (porteur only, via toggle secret) ──
-              const beneficeTotalCache    = ventesCommitted.reduce((s, tx) => s + (tx.beneficeCachee || 0), 0);
-              const partPorteurReelle     = ventesCommitted.reduce((s, tx) => s + (tx.partPorteurCachee || tx.partPorteurCache || 0), 0);
-              const partAssocieReelle     = ventesCommitted.reduce((s, tx) => s + (tx.partAssocieCachee || tx.partAssocieCache || 0), 0);
-              const redistribVersPorteurR = redistribVersPorteur;
-              const redistribVersAssocieR = redistribVersAssocie;
-              const totalPorteurReel      = partPorteurReelle + redistribVersPorteurR;
-              const totalAssocieReel      = partAssocieReelle + redistribVersAssocieR;
+              const pPorteur = isPorteur && showRealPartner ? partPorteurReel  : partPorteurVisible;
+              const pAssocie = isPorteur && showRealPartner ? partAssocieReel  : partAssocieVisible;
+              const bTotal   = isPorteur && showRealPartner ? beneficeTotalReel : beneficeTotalVisible;
 
               return (
                 <div style={{ background:tk.card, borderRadius:16, border:`2px solid ${isPorteur ? '#D4AF3730':'#3B82F630'}`, padding:'18px 20px', boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' }}>
+                  <h3 style={{ margin:'0 0 12px', fontSize:13, fontWeight:800, color:tk.ink, display:'flex', alignItems:'center', gap:8 }}>
+                    <Shield size={15} color={isPorteur ? tk.accent : tk.blue}/>
+                    {langue==='fr' ? 'Tableau des Partenaires' : 'Partners Overview'}
+                    {isPorteur && showRealPartner && (
+                      <span style={{ fontSize:9, color:'#D4AF37', padding:'2px 7px', borderRadius:5, background:'rgba(212,175,55,0.12)', border:'1px solid rgba(212,175,55,0.25)', display:'inline-flex', alignItems:'center', gap:3 }}>
+                        <Zap size={8} color="#D4AF37"/> {langue==='fr' ? 'Vue réelle' : 'Real view'}
+                      </span>
+                    )}
+                  </h3>
 
-                  {/* En-tête avec toggle secret porteur */}
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-                    <h3 style={{ margin:0, fontSize:13, fontWeight:800, color:tk.ink, display:'flex', alignItems:'center', gap:8 }}>
-                      <Shield size={15} color={isPorteur ? tk.accent : tk.blue}/>
-                      {langue==='fr' ? 'Tableau des Partenaires' : 'Partners Overview'}
-                    </h3>
-                  </div>
-
-                  {/* Indicateur mode (seulement quand vue réelle active) */}
-                  {isPorteur && showRealPartner && (
-                    <div style={{ fontSize:9, color:'#D4AF37', marginBottom:10, padding:'3px 8px', borderRadius:6, background:'rgba(212,175,55,0.08)', border:'1px solid rgba(212,175,55,0.2)', display:'inline-flex', alignItems:'center', gap:4 }}>
-                      <Zap size={8} color="#D4AF37" /> {langue==='fr' ? 'Vue réelle' : 'Real view'}
-                    </div>
-                  )}
-
-                  {/* Section Porteur */}
+                  {/* Porteur */}
                   <div style={{ marginBottom:10 }}>
                     <div style={{ fontSize:10, fontWeight:700, color:tk.accent, letterSpacing:1, textTransform:'uppercase', marginBottom:6, display:'flex', alignItems:'center', gap:4 }}>
                       <div style={{width:6,height:6,borderRadius:'50%',background:tk.accent}}/> {langue==='fr' ? "Porteur d'affaire" : 'Business Owner'}
                     </div>
                     {[
-                      {
-                        label: langue==='fr' ? 'Part sur bénéfices' : 'Profit share',
-                        value: isPorteur && showRealPartner ? partPorteurReelle : partPorteurVisible
-                      },
-                      {
-                        label: langue==='fr' ? 'Répartitions reçues' : 'Received distributions',
-                        value: isPorteur && showRealPartner ? redistribVersPorteurR : redistribVersPorteur
-                      },
-                      {
-                        label: langue==='fr' ? 'Solde total porteur' : 'Total owner balance',
-                        value: isPorteur && showRealPartner ? totalPorteurReel : totalPorteurVisible,
-                        bold: true, accent: true
-                      },
+                      { label: langue==='fr' ? 'Part sur bénéfices' : 'Profit share', value: pPorteur },
+                      { label: langue==='fr' ? 'Total cumulé porteur' : 'Total owner', value: pPorteur, bold:true, accent:true },
                     ].map((r,i) => (
                       <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 8px', borderRadius:7, marginBottom:3, background: r.bold ? (dark?'#D4AF3715':'#FFFBEB') : 'transparent' }}>
                         <span style={{ fontSize:11, color: r.bold ? tk.accent : tk.sub }}>{r.label}</span>
-                        <span style={{ fontSize:12, fontWeight: r.bold ? 800 : 600, color: r.accent ? tk.accent : (dark?'#F0F4FF':'#0A1628') }}>{r.value.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF</span>
+                        <span style={{ fontSize:12, fontWeight: r.bold?800:600, color: r.accent ? tk.accent : (dark?'#F0F4FF':'#0A1628') }}>{r.value.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF</span>
                       </div>
                     ))}
                   </div>
 
-                  {/* Séparateur */}
                   <div style={{ height:1, background: dark?'rgba(255,255,255,0.04)':'rgba(0,0,0,0.05)', margin:'8px 0' }} />
 
-                  {/* Section Associé */}
+                  {/* Associé */}
                   <div>
                     <div style={{ fontSize:10, fontWeight:700, color:tk.blue, letterSpacing:1, textTransform:'uppercase', marginBottom:6, display:'flex', alignItems:'center', gap:4 }}>
                       <div style={{width:6,height:6,borderRadius:'50%',background:tk.blue}}/> {langue==='fr' ? 'Associé' : 'Associate'}
                     </div>
                     {[
-                      {
-                        label: langue==='fr' ? 'Part sur bénéfices' : 'Profit share',
-                        value: isPorteur && showRealPartner ? partAssocieReelle : partAssocieVisible
-                      },
-                      {
-                        label: langue==='fr' ? 'Répartitions reçues' : 'Received distributions',
-                        value: isPorteur && showRealPartner ? redistribVersAssocieR : redistribVersAssocie
-                      },
-                      {
-                        label: langue==='fr' ? 'Solde total associé' : 'Total associate balance',
-                        value: isPorteur && showRealPartner ? totalAssocieReel : totalAssocieVisible,
-                        bold: true, blue: true
-                      },
+                      { label: langue==='fr' ? 'Part sur bénéfices' : 'Profit share', value: pAssocie },
+                      { label: langue==='fr' ? 'Total cumulé associé' : 'Total associate', value: pAssocie, bold:true, blue:true },
                     ].map((r,i) => (
                       <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 8px', borderRadius:7, marginBottom:3, background: r.bold ? (dark?'#3B82F615':'#EFF6FF') : 'transparent' }}>
                         <span style={{ fontSize:11, color: r.bold ? tk.blue : tk.sub }}>{r.label}</span>
-                        <span style={{ fontSize:12, fontWeight: r.bold ? 800 : 600, color: r.blue ? tk.blue : (dark?'#F0F4FF':'#0A1628') }}>{r.value.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF</span>
+                        <span style={{ fontSize:12, fontWeight: r.bold?800:600, color: r.blue ? tk.blue : (dark?'#F0F4FF':'#0A1628') }}>{r.value.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF</span>
                       </div>
                     ))}
                   </div>
 
-                  {/* Bénéfice total (bas du panneau) */}
-                  <div style={{ marginTop:12, padding:'8px 10px', borderRadius:8, background: dark?'rgba(255,255,255,0.02)':'rgba(0,0,0,0.02)', border:`1px solid ${tk.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <div style={{ marginTop:10, padding:'8px 10px', borderRadius:8, background: dark?'rgba(255,255,255,0.02)':'rgba(0,0,0,0.02)', border:`1px solid ${tk.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                     <span style={{ fontSize:10, color:tk.faint }}>{langue==='fr' ? 'Bénéfice total opérations' : 'Total operations profit'}</span>
-                    <span style={{ fontSize:13, fontWeight:800, color:tk.ink }}>
-                      {(isPorteur && showRealPartner ? beneficeTotalCache : beneficeTotalVisible).toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF
-                    </span>
+                    <span style={{ fontSize:13, fontWeight:800, color:tk.ink }}>{bTotal.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF</span>
                   </div>
                 </div>
               );

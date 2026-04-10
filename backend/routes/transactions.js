@@ -175,14 +175,59 @@ router.put('/:id', asyncHandler(async (req, res) => {
   if (setClauses.length === 0)
     return res.status(400).json({ error: 'Aucun champ à modifier' });
 
-  setClauses.push('date_modification = NOW()');
-  params.push(id);
+  await dbTransaction(async (conn) => {
+    // ── Lire la transaction originale ──────────────────────────
+    const [rows] = await conn.query('SELECT * FROM transactions WHERE id = ?', [id]);
+    if (!rows.length) throw new Error('Transaction introuvable');
+    const original = rows[0];
 
-  await query(`UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`, params);
-  await query(
-    "INSERT INTO logs (id, date_heure, type_evenement, description, user_id) VALUES (?, NOW(), 'edition', ?, ?)",
-    [`LOG_${Date.now()}`, `Transaction modifiée: ${id}`, req.user.id]
-  );
+    // ── Mettre à jour la transaction ──────────────────────────
+    setClauses.push('date_modification = NOW()');
+    params.push(id);
+    await conn.query(`UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`, params);
+
+    // ── Si c'est un ACHAT : recalculer stock_devises ──────────
+    if (original.type === 'achat' && original.devise === 'USDT' && changes.quantite !== undefined) {
+      const ancienneQte  = parseFloat(original.quantite || 0);
+      const nouvelleQte  = parseFloat(changes.quantite);
+      const deltaQte     = nouvelleQte - ancienneQte;  // peut être négatif
+
+      const nouveauTaux  = parseFloat(changes.taux || original.taux_achat_unitaire || 0);
+      const nouveauPrix  = nouvelleQte * nouveauTaux;
+
+      // Lire le stock actuel
+      const [stockRows] = await conn.query(
+        'SELECT quantite, cmup FROM stock_devises WHERE devise = ?', ['USDT']
+      );
+      const stockActuel = parseFloat(stockRows[0]?.quantite || 0);
+      const cmupActuel  = parseFloat(stockRows[0]?.cmup || 0);
+
+      // Recalculer le CMUP :
+      // 1. Retirer l'ancien achat de la valorisation totale
+      // 2. Ajouter le nouvel achat
+      const valeurSansAncien = (stockActuel * cmupActuel) - (ancienneQte * parseFloat(original.taux_achat_unitaire || 0));
+      const nouveauStockQte  = stockActuel + deltaQte;
+      const nouveauCmup      = nouveauStockQte > 0
+        ? (valeurSansAncien + nouveauPrix) / nouveauStockQte
+        : 0;
+
+      await conn.query(
+        'UPDATE stock_devises SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
+        [deltaQte, Math.max(0, nouveauCmup), 'USDT']
+      );
+
+      // Mettre à jour aussi nouveau_cmup dans la transaction
+      await conn.query(
+        'UPDATE transactions SET nouveau_cmup = ?, prix_achat_total = ? WHERE id = ?',
+        [Math.max(0, nouveauCmup), nouveauPrix, id]
+      );
+    }
+
+    await conn.query(
+      "INSERT INTO logs (id, date_heure, type_evenement, description, user_id) VALUES (?, NOW(), 'edition', ?, ?)",
+      [`LOG_${Date.now()}`, `Transaction modifiée: ${id}`, req.user.id]
+    );
+  });
 
   res.json({ success: true, transaction_id: id });
 }));
@@ -331,11 +376,8 @@ async function handleVente(data, user) {
       [usdtConso, 'USDT']
     );
 
-    // Créditer la caisse avec la valeur visible
-    await conn.query(
-      'UPDATE comptes SET montant = montant + ? WHERE type_compte = ?',
-      [valVenteV, 'caisse']
-    );
+    // NOTE : la caisse n'est PAS créditée automatiquement à la vente.
+    // Elle est alimentée uniquement via le bouton "Alimenter la caisse" (versement).
 
     // Répartition visible
     await conn.query(
