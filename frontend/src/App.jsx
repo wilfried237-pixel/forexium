@@ -4407,5 +4407,5 @@ export default function App() {
         t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
       />
     </>
-  );
+	);
 }
