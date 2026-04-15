@@ -4064,23 +4064,6 @@ export default function App() {
 
   // ── Persistance préférences UI uniquement (pas les données métier) ──
   useEffect(() => {
-    return (
-      <HiddenDataContext.Provider value={{ hiddenUnlocked, setHiddenUnlocked }}>
-        <Toaster position="top-right" richColors duration={2500} />
-        <Dashboard
-          user={user} data={data} profitShare={profitShare}
-          onLogout={handleLogout}
-          onTransaction={handleTransaction}
-          onUpdateProfitShare={handleUpdateProfitShare}
-          onFinalize={handleFinalize}
-          onEditTransaction={handleEditTransaction}
-          onCmupUpdate={handleCmupUpdate}
-          t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
-        />
-      </HiddenDataContext.Provider>
-    );
-
-  useEffect(() => {
     localStorage.setItem('fx_lang', langue);
     localStorage.setItem('fx_dark', JSON.stringify(dark));
   }, [langue, dark]);
@@ -4394,18 +4377,20 @@ export default function App() {
   );
 
   return (
-    <>
-      <Toaster position="top-right" richColors duration={2500} />
-      <Dashboard
-        user={user} data={data} profitShare={profitShare}
-        onLogout={handleLogout}
-        onTransaction={handleTransaction}
-        onUpdateProfitShare={handleUpdateProfitShare}
-        onFinalize={handleFinalize}
-        onEditTransaction={handleEditTransaction}
-        onCmupUpdate={handleCmupUpdate}
-        t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
-      />
-    </>
-	);
+    <HiddenDataContext.Provider value={{ hiddenUnlocked, setHiddenUnlocked }}>
+      <>
+        <Toaster position="top-right" richColors duration={2500} />
+        <Dashboard
+          user={user} data={data} profitShare={profitShare}
+          onLogout={handleLogout}
+          onTransaction={handleTransaction}
+          onUpdateProfitShare={handleUpdateProfitShare}
+          onFinalize={handleFinalize}
+          onEditTransaction={handleEditTransaction}
+          onCmupUpdate={handleCmupUpdate}
+          t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
+        />
+      </>
+    </HiddenDataContext.Provider>
+  );
 }
