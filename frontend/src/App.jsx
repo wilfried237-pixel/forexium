@@ -3732,6 +3732,7 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                   const isPending = tx.statut === 'pending';
                   const isAssocPending = tx.statut === 'assoc_pending';
                   const isPorteurPending = tx.statut === 'porteur_pending';
+                  const isCommitted = tx.statut === 'committed';
                   // Dot orange pulsant : visible pour porteur sur les ventes assoc_pending
                   const showOrangeDot = isPorteur && isAssocPending && tx.type === 'vente';
                   return (
@@ -3831,14 +3832,24 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                                 background:'#F59E0B', color:'#fff',
                               }}>{t.finaliserVente}</button>
                             )}
-                            {/* Modifier */}
-                            {isPorteur && (
+                            {/* Modifier - désactiver si finalisée (committed) */}
+                            {isPorteur && !isCommitted && (
                               <button onClick={()=>setEditTx(tx)} style={{
                                 fontSize:10, fontWeight:600, padding:'3px 8px',
                                 borderRadius:6, border:`1px solid ${tk.border}`, cursor:'pointer',
                                 background: tk.cardB, color: tk.sub,
                                 display:'flex', alignItems:'center', gap:3,
                               }}><Edit2 size={10}/>{t.modifierTx}</button>
+                            )}
+                            {/* Lock icon si finalisée */}
+                            {isCommitted && (
+                              <button disabled style={{
+                                fontSize:10, fontWeight:600, padding:'3px 8px',
+                                borderRadius:6, border:`1px solid ${tk.border}`,
+                                background: tk.cardB, color: tk.faint,
+                                display:'flex', alignItems:'center', gap:3,
+                                opacity: 0.5, cursor: 'not-allowed',
+                              }} title={langue==='fr' ? 'Transaction finalisée' : 'Transaction finalized'}><Lock size={10}/>{t.modifierTx}</button>
                             )}
                           </div>
                         </div>
@@ -3889,9 +3900,9 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
               {(() => {
                 const toutesVentesRep = data.transactions.filter(tx => tx.type === 'vente');
                 const totalPorteurRep = toutesVentesRep.reduce((s, tx) =>
-                  s + (isPorteur && tx.beneficeCachee > 0 ? (tx.partPorteurCache || 0) : (tx.partPorteur || 0)), 0);
+                  s + (tx.beneficeCachee > 0 ? (tx.partPorteurCache || 0) : (tx.partPorteur || 0)), 0);
                 const totalAssocieRep = toutesVentesRep.reduce((s, tx) =>
-                  s + (isPorteur && tx.beneficeCachee > 0 ? (tx.partAssocieCache || 0) : (tx.partAssocie || 0)), 0);
+                  s + (tx.beneficeCachee > 0 ? (tx.partAssocieCache || 0) : (tx.partAssocie || 0)), 0);
                 return [
                   { label:`${t.partner} (${profitShare.porteur}%)`, value: totalPorteurRep, color:tk.accent, bg: dark?'#D4AF3710':'#FFFBEB' },
                   { label:`${t.associate} (${profitShare.associe}%)`, value: totalAssocieRep, color:tk.ink, bg: tk.cardB },
