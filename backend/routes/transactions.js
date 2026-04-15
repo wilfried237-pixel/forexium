@@ -186,6 +186,18 @@ router.put('/:id', asyncHandler(async (req, res) => {
     params.push(id);
     await conn.query(`UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`, params);
 
+    // ── Si c'est une VENTE : recalculer stock_devises ─────────
+    if (original.type === 'vente' && changes.usdtConsomme !== undefined) {
+      const ancienConso  = parseFloat(original.usdt_consomme || 0);
+      const nouveauConso = parseFloat(changes.usdtConsomme);
+      // Ex : ancienConso=5, nouveauConso=6 → delta=-1 → stock diminue de 1 supplémentaire
+      const deltaQte = ancienConso - nouveauConso; // négatif si on consomme plus, positif si moins
+      await conn.query(
+        'UPDATE stock_devises SET quantite = quantite + ? WHERE devise = ?',
+        [deltaQte, 'USDT']
+      );
+    }
+
     // ── Si c'est un ACHAT : recalculer stock_devises ──────────
     if (original.type === 'achat' && original.devise === 'USDT' && changes.quantite !== undefined) {
       const ancienneQte  = parseFloat(original.quantite || 0);

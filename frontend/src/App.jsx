@@ -1,4 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
+
+// CONTEXTE GLOBAL POUR LA VISIBILITÉ DES DONNÉES CACHÉES
+const HiddenDataContext = createContext();
+function useHiddenData() { return useContext(HiddenDataContext); }
 import {
   apiLogin, apiLogout, apiLoadAll,
   apiCreateTransaction, apiFinaliserVente, apiEditTransaction,
@@ -305,12 +309,28 @@ const createLog = (type, description, userId, meta = {}) => ({
   statut: meta.statut || 'success',
 });
 
+
 // Retourne le delta USDT d'une transaction (positif = entrée, négatif = sortie)
 const getUsdtDelta = (tx) => {
   if (tx.type === 'achat' && tx.devise === 'USDT') return tx.quantite;
   if (tx.type === 'vente') return -(tx.usdtConsomme || 0);
   return 0;
 };
+
+// Recalcule la chaîne de stock USDT pour toutes les transactions (en place)
+function recalculerStockUsdt(transactions, initialStock = 0) {
+  let stock = initialStock;
+  // Trier par date croissante
+  const sorted = [...transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
+  for (let i = 0; i < sorted.length; i++) {
+    const tx = sorted[i];
+    tx.stockUsdt_avant = stock;
+    const delta = getUsdtDelta(tx);
+    stock += delta;
+    tx.stockUsdt_apres = stock;
+  }
+  return sorted;
+}
 
 // Simule la chaîne de stock à partir d'une transaction modifiée
 // Retourne { valid, failDate, failStock }
@@ -1007,6 +1027,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
   const [type, setType] = useState(initialType);
   const [useCaisse, setUseCaisse] = useState(false);
   const isPorteur = user?.role === 'porteur';
+  const { hiddenUnlocked, setHiddenUnlocked } = useHiddenData();
 
   // État commun
   const [form, setForm] = useState({
@@ -1023,26 +1044,12 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
   const [customShareV, setCustomShareV] = useState(false);
   const [porteurPctV, setPorteurPctV] = useState(profitShare.porteur);
 
-  // ── État SECTION CACHÉE (porteur uniquement) — déverrouillage par raccourci ──
-  const [hiddenUnlocked, setHiddenUnlocked] = useState(false);
+  // ── État SECTION CACHÉE (porteur uniquement) — déverrouillage par raccourci ou global toggle
   const [tauxCache, setTauxCache] = useState('');
   const [customShareC, setCustomShareC] = useState(false);
   const [porteurPctC, setPorteurPctC] = useState(profitShare.porteur);
   // Triple-tap pour mobile
   const hiddenTapRef = React.useRef({ count: 0, timer: null });
-
-  // Ctrl+Shift+H → toggle section cachée
-  React.useEffect(() => {
-    if (!isPorteur) return;
-    const handler = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'H') {
-        e.preventDefault();
-        setHiddenUnlocked(prev => { if (!prev) setTauxCache(''); return !prev; });
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [isPorteur]);
 
   const handleHiddenTap = () => {
     const ref = hiddenTapRef.current;
@@ -1051,7 +1058,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
     ref.timer = setTimeout(() => { ref.count = 0; }, 800);
     if (ref.count >= 3) {
       ref.count = 0;
-      setHiddenUnlocked(prev => { if (!prev) setTauxCache(''); return !prev; });
+      setHiddenUnlocked(prev => !prev);
     }
   };
 
@@ -1084,6 +1091,13 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
   const pctAC  = 100 - pctPC;
   const partPC = benC * pctPC / 100;
   const partAC = benC * pctAC / 100;
+
+  // Valeurs à afficher selon visibilité globale
+  const showHidden = isPorteur && hiddenUnlocked && tauxC > 0;
+  const myShareValue = showHidden ? partPC : partPV;
+  const mySharePct = showHidden ? pctPC : pctPV;
+  const profitDistributionValue = showHidden ? partPC : partPV;
+  const profitDistributionPct = showHidden ? pctPC : pctPV;
 
   // ── Calculs ACHAT ──
   const deviseStockAchat = data.devises.find(d => d.devise === form.devise);
@@ -1361,7 +1375,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
                   </label>
                   <input type="text" inputMode="numeric"
                     value={tauxVisib}
-                    onChange={handleIntInput(setTauxVisib)}
+                    onChange={handleDecInput(setTauxVisib)}
                     className={`w-full px-4 py-3 rounded-xl border-2 text-sm outline-none transition-all ${dark ? 'border-gray-600 bg-gray-800 text-white' : 'border-gray-200 bg-white'} focus:border-accent`}
                     required />
                 </div>
@@ -1506,7 +1520,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
                           <input type="text" inputMode="numeric"
                             placeholder="0"
                             value={tauxCache}
-                            onChange={handleIntInput(setTauxCache)}
+                            onChange={handleDecInput(setTauxCache)}
                             className={`w-full px-3 py-2.5 rounded-lg border text-sm outline-none transition-all ${dark ? 'border-white/[0.08] bg-white/[0.03] text-white placeholder-white/20' : 'border-gray-200 bg-white'} focus:border-gray-300`} />
                         </div>
                         <div className={`rounded-lg p-2.5 ${dark ? 'bg-white/[0.02] border border-white/[0.05]' : 'bg-gray-50 border border-gray-100'}`}>
@@ -1598,7 +1612,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
                   <input type="text" inputMode="numeric"
                     placeholder="Ex: 650"
                     value={tauxAchatInput}
-                    onChange={handleIntInput(setTauxAchatInput)}
+                    onChange={handleDecInput(setTauxAchatInput)}
                     className={`w-full px-4 py-3 rounded-xl border-2 text-sm outline-none transition-all ${dark ? 'border-gray-600 bg-gray-800 text-white' : 'border-gray-200 bg-white'} focus:border-accent`} />
                 </div>
               </div>
@@ -1810,7 +1824,7 @@ const FinalisationModal = ({ transaction, profitShare, onClose, onFinalize, t, d
                   <input type="text" inputMode="numeric"
                     placeholder="0"
                     value={tauxCache}
-                    onChange={handleIntInput(setTauxCache)}
+                    onChange={handleDecInput(setTauxCache)}
                     className={`w-full px-3 py-2.5 rounded-lg border text-sm outline-none transition-all ${dark ? 'border-white/[0.08] bg-white/[0.03] text-white' : 'border-gray-200 bg-white'} focus:border-gray-300`} />
                 </div>
 
@@ -1875,6 +1889,8 @@ const FinalisationModal = ({ transaction, profitShare, onClose, onFinalize, t, d
 // ─────────────────────────────────────────────────────────────
 const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dark, langue }) => {
   const isPorteur = true; // EditModal n'est accessible qu'au porteur
+  // Empêcher modification si vente déjà validée (statut 'committed')
+  const isLocked = transaction.type === 'vente' && transaction.statut === 'committed';
 
   // ── État VENTE ──
   const [deviseVente, setDeviseVente] = useState(transaction.deviseVente || 'RMB');
@@ -1973,6 +1989,10 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (isLocked) {
+      toast.error(langue === 'fr' ? 'Vente déjà validée, modification impossible.' : 'Sale already validated, cannot edit.');
+      return;
+    }
     const changes = { dateModification: new Date() };
 
     if (transaction.type === 'vente') {
@@ -2272,7 +2292,7 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
                         <input type="text" inputMode="numeric"
                           placeholder="0"
                           value={tauxCache}
-                          onChange={handleIntInput(setTauxCache)}
+                          onChange={handleDecInput(setTauxCache)}
                           className={`w-full px-3 py-2.5 rounded-lg border text-sm outline-none transition-all ${dark ? 'border-white/[0.08] bg-white/[0.03] text-white placeholder-white/20' : 'border-gray-200 bg-white'} focus:border-gray-300`} />
                       </div>
                       <div className={`rounded-lg p-2.5 ${dark ? 'bg-white/[0.02] border border-white/[0.05]' : 'bg-gray-50 border border-gray-100'}`}>
@@ -2380,8 +2400,15 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
 
           <div className="flex gap-3 pt-2">
             <Button type="button" variant="secondary" onClick={onClose} className="flex-1">{t.cancel}</Button>
-            <Button type="submit" className="flex-1">{t.save}</Button>
+            <Button type="submit" className="flex-1" disabled={isLocked}>{t.save}</Button>
           </div>
+        {isLocked && (
+          <div className={`mt-4 p-3 rounded-xl border text-center font-semibold ${dark ? 'bg-red-900/20 border-red-700/40 text-red-300' : 'bg-red-50 border-red-200 text-red-700'}`}>
+            {langue === 'fr'
+              ? 'Vente déjà validée : modification impossible.'
+              : 'Sale already validated: cannot edit.'}
+          </div>
+        )}
         </form>
       </div>
     </div>
@@ -2538,6 +2565,7 @@ const SettingsModal = ({ profitShare, onClose, onUpdate, t, dark }) => {
 // MODAL MOUVEMENTS DE STOCK USDT — Registre complet
 // ─────────────────────────────────────────────────────────────
 
+
 // ─────────────────────────────────────────────────────────────
 // REGISTRE MOUVEMENTS DE STOCK USDT
 // Design registre comptable professionnel
@@ -2552,20 +2580,21 @@ const StockMovementModal = ({ data, user, onClose, t, dark, langue }) => {
 
   const usdtStock = data.devises.find(d => d.devise === 'USDT') || { quantite: 0, cmup: 0 };
 
+  // Recalculer la chaîne de stock USDT pour toutes les transactions (affichage)
+  const usdtTransactions = data.transactions.filter(tx => tx.type === 'vente' || (tx.type === 'achat' && tx.devise === 'USDT'));
+  const recalculated = recalculerStockUsdt(usdtTransactions, 0);
+
   // ── Construire les lignes du registre ──
-  const allLines = [...data.transactions]
-    .filter(tx => tx.type === 'vente' || (tx.type === 'achat' && tx.devise === 'USDT'))
-    .sort((a, b) => new Date(a.date) - new Date(b.date))
-    .map((tx) => {
-      const isIn  = tx.type === 'achat';
-      const qty   = Math.abs(isIn ? (tx.quantite || 0) : (tx.usdtConsomme || 0));
-      const sAvant = tx.stockUsdt_avant ?? 0;
-      const sApres = tx.stockUsdt_apres ?? (isIn ? sAvant + qty : sAvant - qty);
-      const libelle = isIn
-        ? `Approvisionnement${tx.sourceCompte === 'caisse' ? ' — Caisse' : ' — Dépôt'}${tx.fournisseur ? '  ·  ' + tx.fournisseur : ''}`
-        : `Vente ${tx.deviseVente || ''}${tx.client ? '  ·  ' + tx.client : ''}`;
-      return { ...tx, isIn, qty, sAvant, sApres, libelle };
-    });
+  const allLines = recalculated.map((tx) => {
+    const isIn  = tx.type === 'achat';
+    const qty   = Math.abs(isIn ? (tx.quantite || 0) : (tx.usdtConsomme || 0));
+    const sAvant = tx.stockUsdt_avant ?? 0;
+    const sApres = tx.stockUsdt_apres ?? (isIn ? sAvant + qty : sAvant - qty);
+    const libelle = isIn
+      ? `Approvisionnement${tx.sourceCompte === 'caisse' ? ' — Caisse' : ' — Dépôt'}${tx.fournisseur ? '  ·  ' + tx.fournisseur : ''}`
+      : `Vente ${tx.deviseVente || ''}${tx.client ? '  ·  ' + tx.client : ''}`;
+    return { ...tx, isIn, qty, sAvant, sApres, libelle };
+  });
 
   const rows = allLines.filter(m => {
     if (filterDir !== 'all' && ((filterDir === 'in') !== m.isIn)) return false;
@@ -3265,7 +3294,8 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
     achat:   { bg: dark ? '#3B82F615' : '#DBEAFE', text: '#3B82F6', icon: ArrowDownLeft, label: langue==='fr'?'Achat':'Purchase' },
     depense: { bg: dark ? '#EF444415' : '#FEE2E2', text: '#EF4444', icon: FileText,      label: langue==='fr'?'Dépense':'Expense' },
     retrait: { bg: dark ? '#F59E0B15' : '#FEF3C7', text: '#F59E0B', icon: DollarSign,    label: langue==='fr'?'Retrait':'Withdrawal' },
-    restock: { bg: dark ? '#8B5CF615' : '#EDE9FE', text: '#8B5CF6', icon: RefreshCw,     label: langue==='fr'?'Restock':'Restock' },
+    restock:    { bg: dark ? '#8B5CF615' : '#EDE9FE', text: '#8B5CF6', icon: RefreshCw,     label: langue==='fr'?'Alimenter la caisse':'Fund Cash Register' },
+    versement:  { bg: dark ? '#8B5CF615' : '#EDE9FE', text: '#8B5CF6', icon: RefreshCw,     label: langue==='fr'?'Alimenter la caisse':'Fund Cash Register' },
   };
 
   // ── Tooltip personnalisé recharts ──
@@ -3740,10 +3770,12 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                                 <span style={{ fontSize: 10, padding: '1px 7px', borderRadius: 4, background:'#F59E0B20', color:'#F59E0B', fontWeight:700 }}>EN ATTENTE</span>
                               )}
                               {/* porteur_pending et assoc_pending : pas de badge texte */}
-                              {tx.deviseVente
-                                ? <span style={{ fontSize: 12, fontWeight: 600, color: tk.ink }}>{tx.quantiteDevise?.toLocaleString('fr-FR',{maximumFractionDigits:4})} {tx.deviseVente} → {tx.usdtConsomme?.toFixed(4)} USDT</span>
-                                : tx.devise && <span style={{ fontSize: 12, fontWeight: 600, color: tk.ink }}>{tx.quantite?.toLocaleString('fr-FR',{maximumFractionDigits:4})} {tx.devise}</span>
-                              }
+                              {tx.type === 'vente' && tx.deviseVente && (
+                                <span style={{ fontSize: 12, fontWeight: 600, color: tk.ink }}>{tx.quantiteDevise?.toLocaleString('fr-FR',{maximumFractionDigits:4})} {tx.deviseVente} → {tx.usdtConsomme?.toFixed(4)} USDT</span>
+                              )}
+                              {tx.type === 'achat' && tx.devise && (
+                                <span style={{ fontSize: 12, fontWeight: 600, color: tk.ink }}>{tx.quantite?.toLocaleString('fr-FR',{maximumFractionDigits:4})} {tx.devise}</span>
+                              )}
                             </div>
                             <p style={{ fontSize: 11, color: tk.sub, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {format(tx.date, 'dd/MM/yyyy HH:mm')}
@@ -3995,6 +4027,19 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
 // ─────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser] = useState(null);
+  // Global hidden/visible state
+  const [hiddenUnlocked, setHiddenUnlocked] = useState(false);
+  // Global keyboard shortcut for toggling hidden data
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'H') {
+        e.preventDefault();
+        setHiddenUnlocked(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
   const [langue, setLangue] = useState('fr');
   const [dark, setDark] = useState(false);
   const [profitShare, setProfitShare] = useState(DEFAULT_PROFIT_SHARE);
@@ -4019,21 +4064,21 @@ export default function App() {
 
   // ── Persistance préférences UI uniquement (pas les données métier) ──
   useEffect(() => {
-    try {
-      const slang = localStorage.getItem('fx_lang');
-      const sdark = localStorage.getItem('fx_dark');
-      const stoken = localStorage.getItem('fx_token');
-      const suser = localStorage.getItem('fx_user');
-      if (slang) setLangue(slang);
-      if (sdark) setDark(JSON.parse(sdark));
-      // Restaurer session si token encore valide
-      if (stoken && suser) {
-        const u = JSON.parse(suser);
-        setUser(u);
-        setSessionStart(new Date());
-      }
-    } catch (e) {}
-  }, []);
+    return (
+      <HiddenDataContext.Provider value={{ hiddenUnlocked, setHiddenUnlocked }}>
+        <Toaster position="top-right" richColors duration={2500} />
+        <Dashboard
+          user={user} data={data} profitShare={profitShare}
+          onLogout={handleLogout}
+          onTransaction={handleTransaction}
+          onUpdateProfitShare={handleUpdateProfitShare}
+          onFinalize={handleFinalize}
+          onEditTransaction={handleEditTransaction}
+          onCmupUpdate={handleCmupUpdate}
+          t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
+        />
+      </HiddenDataContext.Provider>
+    );
 
   useEffect(() => {
     localStorage.setItem('fx_lang', langue);
