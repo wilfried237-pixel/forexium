@@ -1,8 +1,4 @@
-import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
-
-// CONTEXTE GLOBAL POUR LA VISIBILITÉ DES DONNÉES CACHÉES
-const HiddenDataContext = createContext();
-function useHiddenData() { return useContext(HiddenDataContext); }
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   apiLogin, apiLogout, apiLoadAll,
   apiCreateTransaction, apiFinaliserVente, apiEditTransaction,
@@ -309,28 +305,12 @@ const createLog = (type, description, userId, meta = {}) => ({
   statut: meta.statut || 'success',
 });
 
-
 // Retourne le delta USDT d'une transaction (positif = entrée, négatif = sortie)
 const getUsdtDelta = (tx) => {
   if (tx.type === 'achat' && tx.devise === 'USDT') return tx.quantite;
   if (tx.type === 'vente') return -(tx.usdtConsomme || 0);
   return 0;
 };
-
-// Recalcule la chaîne de stock USDT pour toutes les transactions (en place)
-function recalculerStockUsdt(transactions, initialStock = 0) {
-  let stock = initialStock;
-  // Trier par date croissante
-  const sorted = [...transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
-  for (let i = 0; i < sorted.length; i++) {
-    const tx = sorted[i];
-    tx.stockUsdt_avant = stock;
-    const delta = getUsdtDelta(tx);
-    stock += delta;
-    tx.stockUsdt_apres = stock;
-  }
-  return sorted;
-}
 
 // Simule la chaîne de stock à partir d'une transaction modifiée
 // Retourne { valid, failDate, failStock }
@@ -1027,7 +1007,6 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
   const [type, setType] = useState(initialType);
   const [useCaisse, setUseCaisse] = useState(false);
   const isPorteur = user?.role === 'porteur';
-  const { hiddenUnlocked, setHiddenUnlocked } = useHiddenData();
 
   // État commun
   const [form, setForm] = useState({
@@ -1044,12 +1023,26 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
   const [customShareV, setCustomShareV] = useState(false);
   const [porteurPctV, setPorteurPctV] = useState(profitShare.porteur);
 
-  // ── État SECTION CACHÉE (porteur uniquement) — déverrouillage par raccourci ou global toggle
+  // ── État SECTION CACHÉE (porteur uniquement) — déverrouillage par raccourci ──
+  const [hiddenUnlocked, setHiddenUnlocked] = useState(false);
   const [tauxCache, setTauxCache] = useState('');
   const [customShareC, setCustomShareC] = useState(false);
   const [porteurPctC, setPorteurPctC] = useState(profitShare.porteur);
   // Triple-tap pour mobile
   const hiddenTapRef = React.useRef({ count: 0, timer: null });
+
+  // Ctrl+Shift+H → toggle section cachée
+  React.useEffect(() => {
+    if (!isPorteur) return;
+    const handler = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'H') {
+        e.preventDefault();
+        setHiddenUnlocked(prev => { if (!prev) setTauxCache(''); return !prev; });
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isPorteur]);
 
   const handleHiddenTap = () => {
     const ref = hiddenTapRef.current;
@@ -1058,7 +1051,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
     ref.timer = setTimeout(() => { ref.count = 0; }, 800);
     if (ref.count >= 3) {
       ref.count = 0;
-      setHiddenUnlocked(prev => !prev);
+      setHiddenUnlocked(prev => { if (!prev) setTauxCache(''); return !prev; });
     }
   };
 
@@ -1091,13 +1084,6 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
   const pctAC  = 100 - pctPC;
   const partPC = benC * pctPC / 100;
   const partAC = benC * pctAC / 100;
-
-  // Valeurs à afficher selon visibilité globale
-  const showHidden = isPorteur && hiddenUnlocked && tauxC > 0;
-  const myShareValue = showHidden ? partPC : partPV;
-  const mySharePct = showHidden ? pctPC : pctPV;
-  const profitDistributionValue = showHidden ? partPC : partPV;
-  const profitDistributionPct = showHidden ? pctPC : pctPV;
 
   // ── Calculs ACHAT ──
   const deviseStockAchat = data.devises.find(d => d.devise === form.devise);
@@ -1889,8 +1875,6 @@ const FinalisationModal = ({ transaction, profitShare, onClose, onFinalize, t, d
 // ─────────────────────────────────────────────────────────────
 const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dark, langue }) => {
   const isPorteur = true; // EditModal n'est accessible qu'au porteur
-  // Empêcher modification si vente déjà validée (statut 'committed')
-  const isLocked = transaction.type === 'vente' && transaction.statut === 'committed';
 
   // ── État VENTE ──
   const [deviseVente, setDeviseVente] = useState(transaction.deviseVente || 'RMB');
@@ -1989,10 +1973,6 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (isLocked) {
-      toast.error(langue === 'fr' ? 'Vente déjà validée, modification impossible.' : 'Sale already validated, cannot edit.');
-      return;
-    }
     const changes = { dateModification: new Date() };
 
     if (transaction.type === 'vente') {
@@ -2400,15 +2380,8 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
 
           <div className="flex gap-3 pt-2">
             <Button type="button" variant="secondary" onClick={onClose} className="flex-1">{t.cancel}</Button>
-            <Button type="submit" className="flex-1" disabled={isLocked}>{t.save}</Button>
+            <Button type="submit" className="flex-1">{t.save}</Button>
           </div>
-        {isLocked && (
-          <div className={`mt-4 p-3 rounded-xl border text-center font-semibold ${dark ? 'bg-red-900/20 border-red-700/40 text-red-300' : 'bg-red-50 border-red-200 text-red-700'}`}>
-            {langue === 'fr'
-              ? 'Vente déjà validée : modification impossible.'
-              : 'Sale already validated: cannot edit.'}
-          </div>
-        )}
         </form>
       </div>
     </div>
@@ -2565,7 +2538,6 @@ const SettingsModal = ({ profitShare, onClose, onUpdate, t, dark }) => {
 // MODAL MOUVEMENTS DE STOCK USDT — Registre complet
 // ─────────────────────────────────────────────────────────────
 
-
 // ─────────────────────────────────────────────────────────────
 // REGISTRE MOUVEMENTS DE STOCK USDT
 // Design registre comptable professionnel
@@ -2580,21 +2552,20 @@ const StockMovementModal = ({ data, user, onClose, t, dark, langue }) => {
 
   const usdtStock = data.devises.find(d => d.devise === 'USDT') || { quantite: 0, cmup: 0 };
 
-  // Recalculer la chaîne de stock USDT pour toutes les transactions (affichage)
-  const usdtTransactions = data.transactions.filter(tx => tx.type === 'vente' || (tx.type === 'achat' && tx.devise === 'USDT'));
-  const recalculated = recalculerStockUsdt(usdtTransactions, 0);
-
   // ── Construire les lignes du registre ──
-  const allLines = recalculated.map((tx) => {
-    const isIn  = tx.type === 'achat';
-    const qty   = Math.abs(isIn ? (tx.quantite || 0) : (tx.usdtConsomme || 0));
-    const sAvant = tx.stockUsdt_avant ?? 0;
-    const sApres = tx.stockUsdt_apres ?? (isIn ? sAvant + qty : sAvant - qty);
-    const libelle = isIn
-      ? `Approvisionnement${tx.sourceCompte === 'caisse' ? ' — Caisse' : ' — Dépôt'}${tx.fournisseur ? '  ·  ' + tx.fournisseur : ''}`
-      : `Vente ${tx.deviseVente || ''}${tx.client ? '  ·  ' + tx.client : ''}`;
-    return { ...tx, isIn, qty, sAvant, sApres, libelle };
-  });
+  const allLines = [...data.transactions]
+    .filter(tx => tx.type === 'vente' || (tx.type === 'achat' && tx.devise === 'USDT'))
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .map((tx) => {
+      const isIn  = tx.type === 'achat';
+      const qty   = Math.abs(isIn ? (tx.quantite || 0) : (tx.usdtConsomme || 0));
+      const sAvant = tx.stockUsdt_avant ?? 0;
+      const sApres = tx.stockUsdt_apres ?? (isIn ? sAvant + qty : sAvant - qty);
+      const libelle = isIn
+        ? `Approvisionnement${tx.sourceCompte === 'caisse' ? ' — Caisse' : ' — Dépôt'}${tx.fournisseur ? '  ·  ' + tx.fournisseur : ''}`
+        : `Vente ${tx.deviseVente || ''}${tx.client ? '  ·  ' + tx.client : ''}`;
+      return { ...tx, isIn, qty, sAvant, sApres, libelle };
+    });
 
   const rows = allLines.filter(m => {
     if (filterDir !== 'all' && ((filterDir === 'in') !== m.isIn)) return false;
@@ -3152,6 +3123,7 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
   const [chartPeriod, setChartPeriod] = useState('30');
   const [chartMetric, setChartMetric] = useState('profit');
   const [showRealPartner, setShowRealPartner] = useState(false);
+  const [showVenteDetail, setShowVenteDetail] = useState(false);
 
   const isPorteur = user.role === 'porteur';
 
@@ -3174,8 +3146,8 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
 
   const ventesCommitted = visibleTransactions.filter(tx => tx.type === 'vente');
   const totalProfit = ventesCommitted.reduce((s, tx) => {
-    // Pour le porteur : utilise beneficeCachee seulement si réellement renseigné (> 0)
-    const benefice = isPorteur && tx.beneficeCachee > 0
+    // Cached seulement si porteur ET touche secrète activée
+    const benefice = isPorteur && showRealPartner && tx.beneficeCachee > 0
       ? tx.beneficeCachee
       : (tx.beneficeVisible || tx.profit || 0);
     return s + benefice;
@@ -3294,8 +3266,8 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
     achat:   { bg: dark ? '#3B82F615' : '#DBEAFE', text: '#3B82F6', icon: ArrowDownLeft, label: langue==='fr'?'Achat':'Purchase' },
     depense: { bg: dark ? '#EF444415' : '#FEE2E2', text: '#EF4444', icon: FileText,      label: langue==='fr'?'Dépense':'Expense' },
     retrait: { bg: dark ? '#F59E0B15' : '#FEF3C7', text: '#F59E0B', icon: DollarSign,    label: langue==='fr'?'Retrait':'Withdrawal' },
-    restock:    { bg: dark ? '#8B5CF615' : '#EDE9FE', text: '#8B5CF6', icon: RefreshCw,     label: langue==='fr'?'Alimenter la caisse':'Fund Cash Register' },
-    versement:  { bg: dark ? '#8B5CF615' : '#EDE9FE', text: '#8B5CF6', icon: RefreshCw,     label: langue==='fr'?'Alimenter la caisse':'Fund Cash Register' },
+    restock:    { bg: dark ? '#8B5CF615' : '#EDE9FE', text: '#8B5CF6', icon: RefreshCw,     label: langue==='fr'?'Restock':'Restock' },
+    versement:  { bg: dark ? '#7C3AED15' : '#EDE9FE', text: '#7C3AED', icon: ArrowDownLeft, label: langue==='fr'?'Alimenter la Caisse':'Cash In' },
   };
 
   // ── Tooltip personnalisé recharts ──
@@ -3732,7 +3704,6 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                   const isPending = tx.statut === 'pending';
                   const isAssocPending = tx.statut === 'assoc_pending';
                   const isPorteurPending = tx.statut === 'porteur_pending';
-                  const isCommitted = tx.statut === 'committed';
                   // Dot orange pulsant : visible pour porteur sur les ventes assoc_pending
                   const showOrangeDot = isPorteur && isAssocPending && tx.type === 'vente';
                   return (
@@ -3832,24 +3803,14 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                                 background:'#F59E0B', color:'#fff',
                               }}>{t.finaliserVente}</button>
                             )}
-                            {/* Modifier - désactiver si finalisée (committed) */}
-                            {isPorteur && !isCommitted && (
+                            {/* Modifier — bloqué si vente committed */}
+                            {isPorteur && !(tx.type === 'vente' && tx.statut === 'committed') && (
                               <button onClick={()=>setEditTx(tx)} style={{
                                 fontSize:10, fontWeight:600, padding:'3px 8px',
                                 borderRadius:6, border:`1px solid ${tk.border}`, cursor:'pointer',
                                 background: tk.cardB, color: tk.sub,
                                 display:'flex', alignItems:'center', gap:3,
                               }}><Edit2 size={10}/>{t.modifierTx}</button>
-                            )}
-                            {/* Lock icon si finalisée */}
-                            {isCommitted && (
-                              <button disabled style={{
-                                fontSize:10, fontWeight:600, padding:'3px 8px',
-                                borderRadius:6, border:`1px solid ${tk.border}`,
-                                background: tk.cardB, color: tk.faint,
-                                display:'flex', alignItems:'center', gap:3,
-                                opacity: 0.5, cursor: 'not-allowed',
-                              }} title={langue==='fr' ? 'Transaction finalisée' : 'Transaction finalized'}><Lock size={10}/>{t.modifierTx}</button>
                             )}
                           </div>
                         </div>
@@ -3900,9 +3861,9 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
               {(() => {
                 const toutesVentesRep = data.transactions.filter(tx => tx.type === 'vente');
                 const totalPorteurRep = toutesVentesRep.reduce((s, tx) =>
-                  s + (tx.beneficeCachee > 0 ? (tx.partPorteurCache || 0) : (tx.partPorteur || 0)), 0);
+                  s + (isPorteur && showRealPartner && tx.beneficeCachee > 0 ? (tx.partPorteurCache || 0) : (tx.partPorteur || 0)), 0);
                 const totalAssocieRep = toutesVentesRep.reduce((s, tx) =>
-                  s + (tx.beneficeCachee > 0 ? (tx.partAssocieCache || 0) : (tx.partAssocie || 0)), 0);
+                  s + (isPorteur && showRealPartner && tx.beneficeCachee > 0 ? (tx.partAssocieCache || 0) : (tx.partAssocie || 0)), 0);
                 return [
                   { label:`${t.partner} (${profitShare.porteur}%)`, value: totalPorteurRep, color:tk.accent, bg: dark?'#D4AF3710':'#FFFBEB' },
                   { label:`${t.associate} (${profitShare.associe}%)`, value: totalAssocieRep, color:tk.ink, bg: tk.cardB },
@@ -3931,7 +3892,7 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                 s + (tx.beneficeCachee > 0 ? (tx.partPorteurCache || 0) : (tx.partPorteur || 0)), 0);
               const partAssocieReel   = toutesVentes.reduce((s, tx) =>
                 s + (tx.beneficeCachee > 0 ? (tx.partAssocieCache || 0) : (tx.partAssocie || 0)), 0);
-              const beneficeTotalReel = toutesVentes.reduce((s, tx) =>
+              const beneficeTotalReel  = toutesVentes.reduce((s, tx) =>
                 s + (tx.beneficeCachee > 0 ? tx.beneficeCachee : (tx.beneficeVisible || tx.profit || 0)), 0);
 
               const pPorteur = isPorteur && showRealPartner ? partPorteurReel  : partPorteurVisible;
@@ -3982,6 +3943,96 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
                         <span style={{ fontSize:12, fontWeight: r.bold?800:600, color: r.blue ? tk.blue : (dark?'#F0F4FF':'#0A1628') }}>{r.value.toLocaleString('fr-FR',{maximumFractionDigits:0})} XAF</span>
                       </div>
                     ))}
+                  </div>
+
+                  {/* ── Détail par vente ── */}
+                  <div style={{ marginTop:10 }}>
+                    <button
+                      onClick={() => setShowVenteDetail(v => !v)}
+                      style={{
+                        width:'100%', display:'flex', alignItems:'center', justifyContent:'space-between',
+                        padding:'7px 10px', borderRadius:8, border:`1px solid ${tk.border}`,
+                        background: dark?'rgba(255,255,255,0.03)':'rgba(0,0,0,0.02)',
+                        cursor:'pointer', color:tk.sub, fontSize:10, fontWeight:700,
+                      }}
+                    >
+                      <span style={{ display:'flex', alignItems:'center', gap:5 }}>
+                        <TrendingUp size={10}/>
+                        {langue==='fr' ? `Détail par vente (${toutesVentes.filter(tx=>tx.statut==='committed'||tx.statut==='assoc_pending'||tx.statut==='porteur_pending').length})` : `Per-sale breakdown (${toutesVentes.filter(tx=>tx.statut==='committed'||tx.statut==='assoc_pending'||tx.statut==='porteur_pending').length})`}
+                      </span>
+                      <span style={{ fontSize:9, color:tk.faint }}>{showVenteDetail ? '▲' : '▼'}</span>
+                    </button>
+
+                    {showVenteDetail && (() => {
+                      const ventesDetail = toutesVentes
+                        .filter(tx => tx.statut === 'committed' || tx.statut === 'assoc_pending' || tx.statut === 'porteur_pending')
+                        .sort((a, b) => new Date(b.date) - new Date(a.date));
+                      const showCache = isPorteur && showRealPartner;
+                      return (
+                        <div style={{ marginTop:6, maxHeight:300, overflowY:'auto', borderRadius:8, border:`1px solid ${tk.border}` }}>
+                          {/* Header */}
+                          <div style={{
+                            display:'grid',
+                            gridTemplateColumns: showCache ? '1fr 80px 80px 80px 80px' : '1fr 80px 70px 70px',
+                            gap:4, padding:'5px 8px',
+                            background: dark?'rgba(255,255,255,0.04)':'rgba(0,0,0,0.03)',
+                            borderBottom:`1px solid ${tk.border}`,
+                            position:'sticky', top:0,
+                          }}>
+                            {['Date', langue==='fr'?'Bén. visible':'Visible', ...(showCache ? [langue==='fr'?'Bén. caché':'Hidden'] : []), langue==='fr'?'Part porteur':'Owner', langue==='fr'?'Part associé':'Assoc.'].map((h,i) => (
+                              <span key={i} style={{ fontSize:9, fontWeight:700, color:tk.faint, textAlign: i===0?'left':'right', textTransform:'uppercase', letterSpacing:0.4 }}>{h}</span>
+                            ))}
+                          </div>
+
+                          {ventesDetail.length === 0 ? (
+                            <div style={{ padding:'12px', textAlign:'center', fontSize:11, color:tk.faint }}>{langue==='fr'?'Aucune vente enregistrée':'No recorded sales'}</div>
+                          ) : ventesDetail.map((tx, i) => {
+                            const benV = tx.beneficeVisible || tx.profit || 0;
+                            const benC = tx.beneficeCachee || 0;
+                            const pP   = showCache && benC > 0 ? (tx.partPorteurCache || 0) : (tx.partPorteur || 0);
+                            const pA   = showCache && benC > 0 ? (tx.partAssocieCache || 0) : (tx.partAssocie || 0);
+                            const isPending = tx.statut === 'assoc_pending' || tx.statut === 'porteur_pending';
+                            return (
+                              <div key={tx.id} style={{
+                                display:'grid',
+                                gridTemplateColumns: showCache ? '1fr 80px 80px 80px 80px' : '1fr 80px 70px 70px',
+                                gap:4, padding:'6px 8px',
+                                borderBottom: i < ventesDetail.length-1 ? `1px solid ${tk.border}` : 'none',
+                                background: isPending ? (dark?'rgba(245,158,11,0.04)':'rgba(245,158,11,0.03)') : 'transparent',
+                                alignItems:'center',
+                              }}>
+                                {/* Date + devise */}
+                                <div style={{ minWidth:0 }}>
+                                  <div style={{ fontSize:10, fontWeight:600, color:tk.ink, display:'flex', alignItems:'center', gap:4 }}>
+                                    {tx.deviseVente && <span style={{ fontSize:9, padding:'1px 4px', borderRadius:3, background: dark?'rgba(255,255,255,0.07)':'rgba(0,0,0,0.06)', color:tk.sub }}>{tx.deviseVente}</span>}
+                                    {isPending && <span style={{ fontSize:8, padding:'1px 4px', borderRadius:3, background:'rgba(245,158,11,0.15)', color:'#F59E0B' }}>•</span>}
+                                  </div>
+                                  <div style={{ fontSize:9, color:tk.faint }}>{format(tx.date,'dd/MM/yy')}</div>
+                                </div>
+                                {/* Bénéfice visible */}
+                                <span style={{ fontSize:10, fontWeight:700, color:tk.green, textAlign:'right' }}>
+                                  {benV > 0 ? `+${benV.toLocaleString('fr-FR',{maximumFractionDigits:0})}` : '—'}
+                                </span>
+                                {/* Bénéfice caché (porteur+réel seulement) */}
+                                {showCache && (
+                                  <span style={{ fontSize:10, fontWeight:700, color:'#D4AF37', textAlign:'right' }}>
+                                    {benC > 0 ? `+${benC.toLocaleString('fr-FR',{maximumFractionDigits:0})}` : '—'}
+                                  </span>
+                                )}
+                                {/* Part porteur */}
+                                <span style={{ fontSize:10, fontWeight:600, color:tk.accent, textAlign:'right' }}>
+                                  {pP > 0 ? pP.toLocaleString('fr-FR',{maximumFractionDigits:0}) : '—'}
+                                </span>
+                                {/* Part associé */}
+                                <span style={{ fontSize:10, fontWeight:600, color:tk.blue, textAlign:'right' }}>
+                                  {pA > 0 ? pA.toLocaleString('fr-FR',{maximumFractionDigits:0}) : '—'}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div style={{ marginTop:10, padding:'8px 10px', borderRadius:8, background: dark?'rgba(255,255,255,0.02)':'rgba(0,0,0,0.02)', border:`1px solid ${tk.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -4038,19 +4089,6 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
 // ─────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser] = useState(null);
-  // Global hidden/visible state
-  const [hiddenUnlocked, setHiddenUnlocked] = useState(false);
-  // Global keyboard shortcut for toggling hidden data
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'H') {
-        e.preventDefault();
-        setHiddenUnlocked(prev => !prev);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
   const [langue, setLangue] = useState('fr');
   const [dark, setDark] = useState(false);
   const [profitShare, setProfitShare] = useState(DEFAULT_PROFIT_SHARE);
@@ -4074,6 +4112,23 @@ export default function App() {
   };
 
   // ── Persistance préférences UI uniquement (pas les données métier) ──
+  useEffect(() => {
+    try {
+      const slang = localStorage.getItem('fx_lang');
+      const sdark = localStorage.getItem('fx_dark');
+      const stoken = localStorage.getItem('fx_token');
+      const suser = localStorage.getItem('fx_user');
+      if (slang) setLangue(slang);
+      if (sdark) setDark(JSON.parse(sdark));
+      // Restaurer session si token encore valide
+      if (stoken && suser) {
+        const u = JSON.parse(suser);
+        setUser(u);
+        setSessionStart(new Date());
+      }
+    } catch (e) {}
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('fx_lang', langue);
     localStorage.setItem('fx_dark', JSON.stringify(dark));
@@ -4388,20 +4443,18 @@ export default function App() {
   );
 
   return (
-    <HiddenDataContext.Provider value={{ hiddenUnlocked, setHiddenUnlocked }}>
-      <>
-        <Toaster position="top-right" richColors duration={2500} />
-        <Dashboard
-          user={user} data={data} profitShare={profitShare}
-          onLogout={handleLogout}
-          onTransaction={handleTransaction}
-          onUpdateProfitShare={handleUpdateProfitShare}
-          onFinalize={handleFinalize}
-          onEditTransaction={handleEditTransaction}
-          onCmupUpdate={handleCmupUpdate}
-          t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
-        />
-      </>
-    </HiddenDataContext.Provider>
+    <>
+      <Toaster position="top-right" richColors duration={2500} />
+      <Dashboard
+        user={user} data={data} profitShare={profitShare}
+        onLogout={handleLogout}
+        onTransaction={handleTransaction}
+        onUpdateProfitShare={handleUpdateProfitShare}
+        onFinalize={handleFinalize}
+        onEditTransaction={handleEditTransaction}
+        onCmupUpdate={handleCmupUpdate}
+        t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
+      />
+    </>
   );
 }
