@@ -3519,12 +3519,15 @@ const DistributionPageInline = ({ distributionDetails, distributionActive, dark,
 // DASHBOARD
 // ─────────────────────────────────────────────────────────────
 const Dashboard = ({
+  user, data, profitShare, t, langue, setLangue, dark, setDark, logs, addLog,
+  onLogout, onTransaction, onUpdateProfitShare, onFinalize, onEditTransaction, onCmupUpdate,
   clients, fournisseurs, devises, distributionDetails, distributionActive,
   onCreateClient, onDeleteClient,
   onCreateFournisseur, onDeleteFournisseur, onPaymentFournisseur,
   onCreateDevise, onDeleteDevise,
   onToggleDistribution,
   apiGetClientExtrait, apiGetFournisseurExtrait,
+  genererFacturePDF, loadDataFromAPI,
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [initialTxType, setInitialTxType] = useState('vente');
@@ -5020,6 +5023,7 @@ export default function App() {
         onCreateDevise={handleCreateDevise} onDeleteDevise={handleDeleteDevise}
         onToggleDistribution={handleToggleDistribution}
         apiGetClientExtrait={apiGetClientExtrait} apiGetFournisseurExtrait={apiGetFournisseurExtrait}
+        genererFacturePDF={genererFacturePDF} loadDataFromAPI={loadDataFromAPI}
       />
     </>
   );
