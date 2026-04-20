@@ -1,5 +1,5 @@
 import express from 'express';
-import { query } from '../config/database.js';
+import { query, transaction as dbTransaction } from '../config/database.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { authenticate } from '../middleware/auth.js';
 
@@ -40,8 +40,145 @@ router.get('/repartition', asyncHandler(async (req, res) => {
       pourcentage_defaut:     parseFloat(r.pourcentage_defaut),
       total_accumule_visible: parseFloat(r.total_accumule_visible || 0),
       total_accumule_cache:   parseFloat(r.total_accumule_cache || 0),
+      distribution_active:    r.distribution_active || false,
     }))
   });
+}));
+
+// ─────────────────────────────────────────────────────────────
+// NEW: GET /api/stats/distribution-details
+// Tableau de distribution avec détails des bénéfices par vente
+// ─────────────────────────────────────────────────────────────
+router.get('/distribution-details', asyncHandler(async (req, res) => {
+  const distributions = await query(`
+    SELECT 
+      dp.id,
+      dp.transaction_id,
+      t.date,
+      t.type,
+      t.devise_vente,
+      t.quantite_vente,
+      t.taux_vente_visible,
+      t.taux_vente_cache,
+      dp.role,
+      dp.benefice_visible,
+      dp.benefice_cache,
+      dp.pourcentage,
+      (dp.benefice_visible + COALESCE(dp.benefice_cache, 0)) as benefice_total,
+      t.user_name,
+      t.client,
+      t.fournisseur
+    FROM distribution_partenaires dp
+    LEFT JOIN transactions t ON dp.transaction_id = t.id
+    WHERE t.statut = 'committed'
+    ORDER BY t.date DESC
+  `);
+
+  // Regrouper par rôle
+  const detailsParRole = {};
+  distributions.forEach(d => {
+    if (!detailsParRole[d.role]) {
+      detailsParRole[d.role] = [];
+    }
+    detailsParRole[d.role].push({
+      id: d.id,
+      transaction_id: d.transaction_id,
+      date: d.date,
+      type: d.type,
+      devise: d.devise_vente,
+      quantite: parseFloat(d.quantite_vente || 0),
+      taux_visible: parseFloat(d.taux_vente_visible || 0),
+      taux_cache: parseFloat(d.taux_vente_cache || 0),
+      benefice_visible: parseFloat(d.benefice_visible || 0),
+      benefice_cache: parseFloat(d.benefice_cache || 0),
+      benefice_total: parseFloat(d.benefice_total || 0),
+      pourcentage: parseInt(d.pourcentage || 0),
+      client: d.client,
+      fournisseur: d.fournisseur,
+    });
+  });
+
+  // Calculer les totaux par rôle
+  const totalsParRole = {};
+  ['porteur', 'associe'].forEach(role => {
+    const dists = detailsParRole[role] || [];
+    totalsParRole[role] = {
+      nb_ventes: dists.length,
+      total_visible: dists.reduce((sum, d) => sum + d.benefice_visible, 0),
+      total_cache: dists.reduce((sum, d) => sum + d.benefice_cache, 0),
+      total: dists.reduce((sum, d) => sum + d.benefice_total, 0),
+    };
+  });
+
+  res.json({
+    distributions: detailsParRole,
+    totals: totalsParRole
+  });
+}));
+
+// ─────────────────────────────────────────────────────────────
+// NEW: POST /api/stats/toggle-distribution
+// Activer/Désactiver l'affichage des bénéfices cachés
+// ─────────────────────────────────────────────────────────────
+router.post('/toggle-distribution', asyncHandler(async (req, res) => {
+  const { role } = req.body;
+  
+  // Si pas de rôle spécifié, faire le toggle pour tous les rôles
+  if (!role) {
+    // Basculer l'état pour les deux rôles
+    const current = await query('SELECT distribution_active FROM repartition_profits WHERE role = ?', ['porteur']);
+    const newState = !current[0].distribution_active;
+
+    await dbTransaction(async (conn) => {
+      await conn.query(
+        'UPDATE repartition_profits SET distribution_active = ?, updated_at = NOW()',
+        [newState]
+      );
+    });
+
+    res.json({ 
+      success: true, 
+      distribution_active: newState,
+      message: newState ? 'Distribution activée' : 'Distribution désactivée'
+    });
+  } else {
+    // Toggle pour un rôle spécifique
+    const current = await query('SELECT distribution_active FROM repartition_profits WHERE role = ?', [role]);
+    if (!current || current.length === 0) {
+      return res.status(400).json({ error: 'Rôle invalide' });
+    }
+
+    const newState = !current[0].distribution_active;
+
+    await dbTransaction(async (conn) => {
+      await conn.query(
+        'UPDATE repartition_profits SET distribution_active = ?, updated_at = NOW() WHERE role = ?',
+        [newState, role]
+      );
+    });
+
+    res.json({ 
+      success: true, 
+      role,
+      distribution_active: newState,
+      message: newState ? 'Distribution activée' : 'Distribution désactivée'
+    });
+  }
+}));
+
+// ─────────────────────────────────────────────────────────────
+// NEW: GET /api/stats/distribution-status
+// Vérifie l'état de la distribution (activée ou non)
+// ─────────────────────────────────────────────────────────────
+router.get('/distribution-status', asyncHandler(async (req, res) => {
+  const status = await query('SELECT role, distribution_active FROM repartition_profits ORDER BY role');
+  
+  const result = {};
+  status.forEach(s => {
+    result[s.role] = s.distribution_active;
+  });
+
+  res.json(result);
 }));
 
 // GET /api/stats/daily
@@ -59,6 +196,38 @@ router.get('/daily', asyncHandler(async (req, res) => {
       benefices_visibles_jour: parseFloat(s.benefices_visibles_jour || 0),
       benefices_caches_jour:   parseFloat(s.benefices_caches_jour || 0),
       ventes_cachees:          parseInt(s.ventes_cachees || 0),
+    }))
+  });
+}));
+
+// ─────────────────────────────────────────────────────────────
+// NEW: GET /api/stats/extraits
+// Vue d'ensemble des extraits de compte
+// ─────────────────────────────────────────────────────────────
+router.get('/extraits', asyncHandler(async (req, res) => {
+  const clients = await query('SELECT * FROM vue_extrait_clients');
+  const fournisseurs = await query('SELECT * FROM vue_extrait_fournisseurs');
+
+  res.json({
+    clients: clients.map(c => ({
+      id: c.id,
+      nom: c.nom,
+      numero: c.numero,
+      solde: parseFloat(c.solde || 0),
+      nb_transactions: parseInt(c.nb_transactions || 0),
+      nb_ventes: parseInt(c.nb_ventes || 0),
+      nb_achats: parseInt(c.nb_achats || 0),
+    })),
+    fournisseurs: fournisseurs.map(f => ({
+      id: f.id,
+      nom: f.nom,
+      numero: f.numero,
+      solde_xaf: parseFloat(f.solde_xaf || 0),
+      solde_usdt: parseFloat(f.solde_usdt || 0),
+      dette_usdt: parseFloat(f.dette_usdt || 0),
+      nb_transactions: parseInt(f.nb_transactions || 0),
+      nb_ventes: parseInt(f.nb_ventes || 0),
+      nb_achats: parseInt(f.nb_achats || 0),
     }))
   });
 }));

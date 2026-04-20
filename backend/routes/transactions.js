@@ -72,7 +72,9 @@ router.put('/:id/valider-assoc', asyncHandler(async (req, res) => {
   res.json({ success: true, transaction_id: id });
 }));
 
-// Finaliser une vente porteur_pending avec le taux caché réel
+// ─────────────────────────────────────────────────────────────
+// PUT /api/transactions/:id/finaliser
+// Finaliser une vente avec le taux caché réel
 // ─────────────────────────────────────────────────────────────
 router.put('/:id/finaliser', asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -123,6 +125,22 @@ router.put('/:id/finaliser', asyncHandler(async (req, res) => {
       'UPDATE repartition_profits SET total_accumule_cache = total_accumule_cache + ? WHERE role = ?',
       [partAC, 'associe']
     );
+
+    // ── Mettre à jour distribution_partenaires avec bénéfices cachés ──
+    try {
+      await conn.query(
+        `UPDATE distribution_partenaires SET benefice_cache = ? WHERE transaction_id = ? AND role = 'porteur'`,
+        [partPC, id]
+      );
+      await conn.query(
+        `UPDATE distribution_partenaires SET benefice_cache = ? WHERE transaction_id = ? AND role = 'associe'`,
+        [partAC, id]
+      );
+    } catch (distErr) {
+      // Table optionnelle - continuer sans erreur
+      console.warn('distribution_partenaires non disponible:', distErr.message);
+    }
+
     await conn.query(
       "INSERT INTO logs (id, date_heure, type_evenement, description, user_id) VALUES (?, NOW(), 'finalisation', ?, ?)",
       [`LOG_${Date.now()}`, `Vente finalisée: ${id} — taux caché: ${tc}`, req.user.id]
@@ -130,6 +148,39 @@ router.put('/:id/finaliser', asyncHandler(async (req, res) => {
   });
 
   res.json({ success: true, transaction_id: id });
+}));
+
+// ─────────────────────────────────────────────────────────────
+// PUT /api/transactions/:id/payment  — Paiement partiel client
+// ─────────────────────────────────────────────────────────────
+router.put('/:id/payment', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { montant_paye, surplus_client = 0 } = req.body;
+
+  if (!montant_paye)
+    return res.status(400).json({ error: 'Montant requis' });
+
+  const [rows] = await query('SELECT * FROM transactions WHERE id = ?', [id]);
+  if (!rows || rows.length === 0)
+    return res.status(404).json({ error: 'Transaction non trouvée' });
+
+  const tx = rows[0];
+  const montantPayeActuel  = parseFloat(tx.montant_paye || 0);
+  const nouveauMontantPaye = montantPayeActuel + parseFloat(montant_paye);
+  const montantTotal       = parseFloat(tx.montant || tx.valeur_vente_visible || 0);
+  const montantReste       = Math.max(0, montantTotal - nouveauMontantPaye);
+
+  await query(
+    'UPDATE transactions SET montant_paye = ?, montant_reste = ?, surplus_client = ?, date_modification = NOW() WHERE id = ?',
+    [nouveauMontantPaye, montantReste, parseFloat(surplus_client), id]
+  );
+
+  res.json({
+    success: true,
+    montant_paye: nouveauMontantPaye,
+    montant_reste: montantReste,
+    surplus_client: parseFloat(surplus_client),
+  });
 }));
 
 // ─────────────────────────────────────────────────────────────
@@ -160,6 +211,11 @@ router.put('/:id', asyncHandler(async (req, res) => {
     porteurPctCache:  'pourcentage_porteur',
     statut:           'statut',
     deviseVente:      'devise_vente',
+    idFournisseur:    'id_fournisseur',
+    modePaiement:     'mode_paiement',
+    montantPaye:      'montant_paye',
+    montantReste:     'montant_reste',
+    surplusClient:    'surplus_client',
   };
 
   const setClauses = [];
@@ -176,47 +232,37 @@ router.put('/:id', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Aucun champ à modifier' });
 
   await dbTransaction(async (conn) => {
-    // ── Lire la transaction originale ──────────────────────────
     const [rows] = await conn.query('SELECT * FROM transactions WHERE id = ?', [id]);
     if (!rows.length) throw new Error('Transaction introuvable');
     const original = rows[0];
 
-    // ── Mettre à jour la transaction ──────────────────────────
     setClauses.push('date_modification = NOW()');
     params.push(id);
     await conn.query(`UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`, params);
 
-    // ── Si c'est une VENTE : recalculer stock_devises ─────────
     if (original.type === 'vente' && changes.usdtConsomme !== undefined) {
       const ancienConso  = parseFloat(original.usdt_consomme || 0);
       const nouveauConso = parseFloat(changes.usdtConsomme);
-      // Ex : ancienConso=5, nouveauConso=6 → delta=-1 → stock diminue de 1 supplémentaire
-      const deltaQte = ancienConso - nouveauConso; // négatif si on consomme plus, positif si moins
+      const deltaQte = ancienConso - nouveauConso;
       await conn.query(
         'UPDATE stock_devises SET quantite = quantite + ? WHERE devise = ?',
         [deltaQte, 'USDT']
       );
     }
 
-    // ── Si c'est un ACHAT : recalculer stock_devises ──────────
     if (original.type === 'achat' && original.devise === 'USDT' && changes.quantite !== undefined) {
       const ancienneQte  = parseFloat(original.quantite || 0);
       const nouvelleQte  = parseFloat(changes.quantite);
-      const deltaQte     = nouvelleQte - ancienneQte;  // peut être négatif
-
+      const deltaQte     = nouvelleQte - ancienneQte;
       const nouveauTaux  = parseFloat(changes.taux || original.taux_achat_unitaire || 0);
       const nouveauPrix  = nouvelleQte * nouveauTaux;
 
-      // Lire le stock actuel
       const [stockRows] = await conn.query(
         'SELECT quantite, cmup FROM stock_devises WHERE devise = ?', ['USDT']
       );
       const stockActuel = parseFloat(stockRows[0]?.quantite || 0);
       const cmupActuel  = parseFloat(stockRows[0]?.cmup || 0);
 
-      // Recalculer le CMUP :
-      // 1. Retirer l'ancien achat de la valorisation totale
-      // 2. Ajouter le nouvel achat
       const valeurSansAncien = (stockActuel * cmupActuel) - (ancienneQte * parseFloat(original.taux_achat_unitaire || 0));
       const nouveauStockQte  = stockActuel + deltaQte;
       const nouveauCmup      = nouveauStockQte > 0
@@ -227,8 +273,6 @@ router.put('/:id', asyncHandler(async (req, res) => {
         'UPDATE stock_devises SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
         [deltaQte, Math.max(0, nouveauCmup), 'USDT']
       );
-
-      // Mettre à jour aussi nouveau_cmup dans la transaction
       await conn.query(
         'UPDATE transactions SET nouveau_cmup = ?, prix_achat_total = ? WHERE id = ?',
         [Math.max(0, nouveauCmup), nouveauPrix, id]
@@ -249,9 +293,6 @@ router.put('/:id', asyncHandler(async (req, res) => {
 // ═════════════════════════════════════════════════════════════
 
 // ─── ACHAT USDT ───────────────────────────────────────────────
-// Règle : pas de plafond pour le dépôt (financement libre).
-//         La caisse a un plafond réel.
-//         On n'utilise plus la procédure stockée proc_achat_usdt.
 async function handleAchat(data, user) {
   const { quantite, taux_unitaire, use_caisse = false, fournisseur } = data;
   if (!quantite || !taux_unitaire)
@@ -263,7 +304,6 @@ async function handleAchat(data, user) {
   const source    = use_caisse ? 'caisse' : 'depot';
 
   return await dbTransaction(async (conn) => {
-    // Vérifier solde caisse uniquement (dépôt = pas de plafond)
     if (use_caisse) {
       const [caisseRows] = await conn.query(
         'SELECT montant FROM comptes WHERE type_compte = ?', ['caisse']
@@ -272,14 +312,12 @@ async function handleAchat(data, user) {
         throw new Error('Solde caisse insuffisant');
     }
 
-    // Lire stock pour CMUP
     const [stockRows] = await conn.query(
       'SELECT quantite, cmup FROM stock_devises WHERE devise = ?', ['USDT']
     );
     const stockActuel = stockRows.length ? parseFloat(stockRows[0].quantite) : 0;
     const cmupActuel  = stockRows.length ? parseFloat(stockRows[0].cmup)     : 0;
 
-    // Calcul CMUP pondéré
     const nouveauCmup = stockActuel <= 0
       ? taux
       : ((stockActuel * cmupActuel) + (qte * taux)) / (stockActuel + qte);
@@ -295,13 +333,11 @@ async function handleAchat(data, user) {
        cmupActuel, nouveauCmup, fournisseur || null]
     );
 
-    // Mettre à jour stock USDT
     await conn.query(
       'UPDATE stock_devises SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
       [qte, nouveauCmup, 'USDT']
     );
 
-    // Débiter le compte source
     await conn.query(
       'UPDATE comptes SET montant = montant - ? WHERE type_compte = ?',
       [prixTotal, source]
@@ -322,12 +358,16 @@ async function handleAchat(data, user) {
 }
 
 // ─── VENTE ────────────────────────────────────────────────────
-// Stock toujours déduit immédiatement. Pas de dépendance au trigger SQL.
 async function handleVente(data, user) {
   const {
     devise_vente, taux_conversion, quantite_vente,
     taux_vente_visible, pct_porteur = 70, pct_associe = 30,
     client, taux_vente_cache = null,
+    // Nouveaux champs v5.6.0+
+    id_fournisseur  = null,
+    mode_paiement   = 'xaf',
+    montant_paye    = 0,
+    surplus_client  = 0,
   } = data;
 
   if (!devise_vente || !taux_conversion || !quantite_vente || !taux_vente_visible || !client)
@@ -353,6 +393,8 @@ async function handleVente(data, user) {
     const pctA         = parseFloat(pct_associe);
     const partPorteur  = benV * (pctP / 100);
     const partAssocie  = benV * (pctA / 100);
+    const montantPayeF = parseFloat(montant_paye);
+    const montantReste = Math.max(0, valVenteV - montantPayeF);
 
     if (stockDispo < usdtConso)
       throw new Error(
@@ -365,31 +407,53 @@ async function handleVente(data, user) {
 
     const txId = `TX_${Date.now()}`;
 
-    await conn.query(`
-      INSERT INTO transactions (
-        id, user_id, type, devise_vente, taux_conversion, taux_achat_xaf,
-        quantite_vente, taux_vente_visible, valeur_achat_xaf, valeur_vente_visible,
-        benefice_visible, part_porteur_visible, part_associe_visible,
-        pourcentage_porteur, pourcentage_associe, usdt_consomme, client,
-        taux_vente_cache, statut
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [
-        txId, user.id, 'vente', devise_vente, conv, tauxAchatXAF,
-        qteDevise, tvV, valAchat, valVenteV,
-        benV, partPorteur, partAssocie,
-        pctP, pctA, usdtConso, client,
-        taux_vente_cache ? parseFloat(taux_vente_cache) : null, statut,
-      ]
-    );
+    // Vérifier si les colonnes v5.6.0+ existent pour l'insertion
+    // On essaie d'abord avec les nouvelles colonnes, fallback vers l'ancien INSERT
+    try {
+      await conn.query(`
+        INSERT INTO transactions (
+          id, user_id, type, devise_vente, taux_conversion, taux_achat_xaf,
+          quantite_vente, taux_vente_visible, valeur_achat_xaf, valeur_vente_visible,
+          benefice_visible, part_porteur_visible, part_associe_visible,
+          pourcentage_porteur, pourcentage_associe, usdt_consomme, client,
+          taux_vente_cache, statut,
+          id_fournisseur, mode_paiement, montant_paye, montant_reste, surplus_client
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          txId, user.id, 'vente', devise_vente, conv, tauxAchatXAF,
+          qteDevise, tvV, valAchat, valVenteV,
+          benV, partPorteur, partAssocie,
+          pctP, pctA, usdtConso, client,
+          taux_vente_cache ? parseFloat(taux_vente_cache) : null, statut,
+          id_fournisseur || null, mode_paiement,
+          montantPayeF, montantReste, parseFloat(surplus_client),
+        ]
+      );
+    } catch (colErr) {
+      // Fallback: colonnes v5.6.0+ pas encore en base → INSERT sans elles
+      await conn.query(`
+        INSERT INTO transactions (
+          id, user_id, type, devise_vente, taux_conversion, taux_achat_xaf,
+          quantite_vente, taux_vente_visible, valeur_achat_xaf, valeur_vente_visible,
+          benefice_visible, part_porteur_visible, part_associe_visible,
+          pourcentage_porteur, pourcentage_associe, usdt_consomme, client,
+          taux_vente_cache, statut
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          txId, user.id, 'vente', devise_vente, conv, tauxAchatXAF,
+          qteDevise, tvV, valAchat, valVenteV,
+          benV, partPorteur, partAssocie,
+          pctP, pctA, usdtConso, client,
+          taux_vente_cache ? parseFloat(taux_vente_cache) : null, statut,
+        ]
+      );
+    }
 
-    // Déduire le stock USDT immédiatement (tous statuts)
+    // Déduire le stock USDT immédiatement
     await conn.query(
       'UPDATE stock_devises SET quantite = quantite - ? WHERE devise = ?',
       [usdtConso, 'USDT']
     );
-
-    // NOTE : la caisse n'est PAS créditée automatiquement à la vente.
-    // Elle est alimentée uniquement via le bouton "Alimenter la caisse" (versement).
 
     // Répartition visible
     await conn.query(
@@ -400,6 +464,44 @@ async function handleVente(data, user) {
       'UPDATE repartition_profits SET total_accumule_visible = total_accumule_visible + ? WHERE role = ?',
       [partAssocie, 'associe']
     );
+
+    // ── Créer entrée distribution_partenaires (bénéfice visible) ──
+    try {
+      await conn.query(`
+        INSERT INTO distribution_partenaires (transaction_id, role, benefice_visible, benefice_cache, pourcentage)
+        VALUES (?, 'porteur', ?, NULL, ?), (?, 'associe', ?, NULL, ?)`,
+        [txId, partPorteur, pctP, txId, partAssocie, pctA]
+      );
+    } catch (distErr) {
+      console.warn('distribution_partenaires non disponible:', distErr.message);
+    }
+
+    // ── Gestion fournisseur USDT (paiement) ──
+    if (id_fournisseur && mode_paiement === 'usdt') {
+      try {
+        const [fournRows] = await conn.query(
+          'SELECT solde_usdt, dette_usdt FROM comptes_fournisseurs WHERE id = ?', [id_fournisseur]
+        );
+        if (fournRows.length) {
+          const montantUsdt = usdtConso; // on utilise l'USDT consommé
+          const soldeFourn  = parseFloat(fournRows[0].solde_usdt || 0);
+          if (soldeFourn >= montantUsdt) {
+            await conn.query(
+              'UPDATE comptes_fournisseurs SET solde_usdt = solde_usdt - ? WHERE id = ?',
+              [montantUsdt, id_fournisseur]
+            );
+          } else {
+            const dette = montantUsdt - soldeFourn;
+            await conn.query(
+              'UPDATE comptes_fournisseurs SET solde_usdt = 0, dette_usdt = dette_usdt + ? WHERE id = ?',
+              [dette, id_fournisseur]
+            );
+          }
+        }
+      } catch (fournErr) {
+        console.warn('comptes_fournisseurs non disponible:', fournErr.message);
+      }
+    }
 
     // Si taux caché fourni dès la vente → enregistrer les données cachées aussi
     if (taux_vente_cache) {
@@ -426,6 +528,19 @@ async function handleVente(data, user) {
         'UPDATE repartition_profits SET total_accumule_cache = total_accumule_cache + ? WHERE role = ?',
         [partAC, 'associe']
       );
+      // Mettre à jour distribution_partenaires avec bénéfice caché
+      try {
+        await conn.query(
+          `UPDATE distribution_partenaires SET benefice_cache = ? WHERE transaction_id = ? AND role = 'porteur'`,
+          [partPC, txId]
+        );
+        await conn.query(
+          `UPDATE distribution_partenaires SET benefice_cache = ? WHERE transaction_id = ? AND role = 'associe'`,
+          [partAC, txId]
+        );
+      } catch (distErr) {
+        console.warn('distribution_partenaires mise à jour:', distErr.message);
+      }
     }
 
     await conn.query(

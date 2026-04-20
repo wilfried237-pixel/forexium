@@ -1,5 +1,6 @@
 -- ============================================================
--- FOREXIUM V5.6.0 - BASE DE DONNÉES MySQL
+-- FOREXIUM V5.6.0+ - BASE DE DONNÉES MySQL
+-- MODIFICATIONS: Comptes, Devises, Paiements
 -- ============================================================
 
 -- Créer la base
@@ -10,7 +11,7 @@ USE forexium_v5;
 -- TABLE 1: USERS (Utilisateurs)
 -- ============================================================
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(50) PRIMARY KEY,
     email VARCHAR(100) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
@@ -22,13 +23,66 @@ CREATE TABLE users (
     INDEX idx_role (role)
 ) ENGINE=InnoDB;
 
--- Aucun utilisateur par défaut — inscription via l'interface
-
 -- ============================================================
--- TABLE 2: STOCK_DEVISES (Stock USDT uniquement)
+-- TABLE 2: COMPTES_CLIENTS (Clients)
 -- ============================================================
 
-CREATE TABLE stock_devises (
+CREATE TABLE IF NOT EXISTS comptes_clients (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nom VARCHAR(255) NOT NULL,
+    numero VARCHAR(50) UNIQUE NOT NULL,
+    adresse TEXT,
+    solde DECIMAL(18,2) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_numero (numero),
+    INDEX idx_nom (nom)
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- TABLE 3: COMPTES_FOURNISSEURS (Fournisseurs)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS comptes_fournisseurs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nom VARCHAR(255) NOT NULL,
+    numero VARCHAR(50) UNIQUE NOT NULL,
+    adresse TEXT,
+    solde_xaf DECIMAL(18,2) DEFAULT 0,
+    solde_usdt DECIMAL(18,8) DEFAULT 0,
+    dette_usdt DECIMAL(18,8) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_numero (numero),
+    INDEX idx_nom (nom)
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- TABLE 4: DEVISES_PERSONNALISEES (Devises du client)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS devises_personnalisees (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(10) NOT NULL UNIQUE,
+    nom VARCHAR(100),
+    taux_conversion DECIMAL(18,8) NOT NULL,
+    description TEXT,
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_code (code)
+) ENGINE=InnoDB;
+
+-- Initialisation devises par défaut
+INSERT IGNORE INTO devises_personnalisees (code, nom, taux_conversion, is_default) VALUES
+('RMB', 'Yuan Chinois', 0.15, TRUE),
+('USD', 'Dollar Américain', 1.00, TRUE);
+
+-- ============================================================
+-- TABLE 5: STOCK_DEVISES (Stock USDT uniquement)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS stock_devises (
     id INT AUTO_INCREMENT PRIMARY KEY,
     devise VARCHAR(10) UNIQUE NOT NULL DEFAULT 'USDT',
     quantite DECIMAL(18,8) DEFAULT 0,
@@ -39,13 +93,13 @@ CREATE TABLE stock_devises (
 ) ENGINE=InnoDB;
 
 -- Initialisation USDT
-INSERT INTO stock_devises (devise, quantite, cmup) VALUES ('USDT', 0, 0);
+INSERT IGNORE INTO stock_devises (devise, quantite, cmup) VALUES ('USDT', 0, 0);
 
 -- ============================================================
--- TABLE 3: COMPTES (Dépôt et Caisse)
+-- TABLE 6: COMPTES (Dépôt et Caisse)
 -- ============================================================
 
-CREATE TABLE comptes (
+CREATE TABLE IF NOT EXISTS comptes (
     id INT AUTO_INCREMENT PRIMARY KEY,
     type_compte ENUM('depot', 'caisse') UNIQUE NOT NULL,
     montant DECIMAL(18,2) DEFAULT 0,
@@ -53,15 +107,15 @@ CREATE TABLE comptes (
 ) ENGINE=InnoDB;
 
 -- Initialisation
-INSERT INTO comptes (type_compte, montant) VALUES
+INSERT IGNORE INTO comptes (type_compte, montant) VALUES
 ('depot', 0),
 ('caisse', 500000);
 
 -- ============================================================
--- TABLE 4: TRANSACTIONS
+-- TABLE 7: TRANSACTIONS (MODIFIÉE)
 -- ============================================================
 
-CREATE TABLE transactions (
+CREATE TABLE IF NOT EXISTS transactions (
     id VARCHAR(100) PRIMARY KEY,
     user_id VARCHAR(50),
     type ENUM('achat', 'vente', 'depense', 'retrait', 'versement') NOT NULL,
@@ -76,7 +130,7 @@ CREATE TABLE transactions (
     beneficiaire VARCHAR(255),
     categorie VARCHAR(100),
     notes TEXT,
-    statut ENUM('pending', 'porteur_pending', 'committed') DEFAULT 'pending',
+    statut ENUM('pending', 'porteur_pending', 'assoc_pending', 'committed') DEFAULT 'pending',
     
     -- Champs ACHAT USDT
     devise VARCHAR(10),
@@ -88,9 +142,9 @@ CREATE TABLE transactions (
     nouveau_cmup DECIMAL(18,8),
     
     -- Champs VENTE (V5.1.0)
-    devise_vente VARCHAR(10), -- RMB ou USD
-    taux_conversion DECIMAL(18,8), -- Combien pour 1 USDT
-    taux_achat_xaf DECIMAL(18,8), -- CMUP / taux_conversion
+    devise_vente VARCHAR(10),
+    taux_conversion DECIMAL(18,8),
+    taux_achat_xaf DECIMAL(18,8),
     quantite_vente DECIMAL(18,8),
     taux_vente_visible DECIMAL(18,2),
     
@@ -112,43 +166,72 @@ CREATE TABLE transactions (
     
     -- Stock USDT
     usdt_consomme DECIMAL(18,8),
-    usdt_restant DECIMAL(18,8),
+    
+    -- NOUVEAU: Paiements partiels
+    montant_paye DECIMAL(18,2) DEFAULT 0,
+    montant_reste DECIMAL(18,2) DEFAULT 0,
+    surplus_client DECIMAL(18,2) DEFAULT 0,
+    
+    -- NOUVEAU: Fournisseur et mode paiement
+    id_fournisseur INT,
+    mode_paiement ENUM('xaf', 'usdt') DEFAULT 'xaf',
     
     -- Métadonnées
     metadata JSON,
     
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (id_fournisseur) REFERENCES comptes_fournisseurs(id) ON DELETE SET NULL,
     INDEX idx_user_id (user_id),
     INDEX idx_type (type),
     INDEX idx_date (date DESC),
     INDEX idx_statut (statut),
-    INDEX idx_devise_vente (devise_vente)
+    INDEX idx_devise_vente (devise_vente),
+    INDEX idx_fournisseur (id_fournisseur)
 ) ENGINE=InnoDB;
 
 -- ============================================================
--- TABLE 5: REPARTITION_PROFITS (Cumul porteurs/associés)
+-- TABLE 8: REPARTITION_PROFITS (Cumul porteurs/associés)
 -- ============================================================
 
-CREATE TABLE repartition_profits (
+CREATE TABLE IF NOT EXISTS repartition_profits (
     id INT AUTO_INCREMENT PRIMARY KEY,
     role ENUM('porteur', 'associe') UNIQUE NOT NULL,
     pourcentage_defaut DECIMAL(5,2) DEFAULT 70.00,
     total_accumule_visible DECIMAL(18,2) DEFAULT 0,
     total_accumule_cache DECIMAL(18,2) DEFAULT 0,
+    distribution_active BOOLEAN DEFAULT FALSE,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_role (role)
 ) ENGINE=InnoDB;
 
 -- Initialisation
-INSERT INTO repartition_profits (role, pourcentage_defaut) VALUES
+INSERT IGNORE INTO repartition_profits (role, pourcentage_defaut) VALUES
 ('porteur', 70.00),
 ('associe', 30.00);
 
 -- ============================================================
--- TABLE 6: LOGS (Journal des activités)
+-- TABLE 9: DISTRIBUTION_PARTENAIRES (Détails des bénéfices par vente)
 -- ============================================================
 
-CREATE TABLE logs (
+CREATE TABLE IF NOT EXISTS distribution_partenaires (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    transaction_id VARCHAR(100) NOT NULL,
+    role ENUM('porteur', 'associe') NOT NULL,
+    benefice_visible DECIMAL(18,2) DEFAULT 0,
+    benefice_cache DECIMAL(18,2) DEFAULT 0,
+    pourcentage DECIMAL(5,2),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE,
+    INDEX idx_transaction (transaction_id),
+    INDEX idx_role (role),
+    UNIQUE KEY unique_tx_role (transaction_id, role)
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- TABLE 10: LOGS (Journal des activités)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS logs (
     id VARCHAR(100) PRIMARY KEY,
     date_heure TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     type_evenement VARCHAR(50) NOT NULL,
@@ -162,10 +245,10 @@ CREATE TABLE logs (
 ) ENGINE=InnoDB;
 
 -- ============================================================
--- TABLE 7: SETTINGS (Paramètres système)
+-- TABLE 11: SETTINGS (Paramètres système)
 -- ============================================================
 
-CREATE TABLE settings (
+CREATE TABLE IF NOT EXISTS settings (
     id INT AUTO_INCREMENT PRIMARY KEY,
     cle VARCHAR(100) UNIQUE NOT NULL,
     valeur TEXT,
@@ -175,19 +258,20 @@ CREATE TABLE settings (
 ) ENGINE=InnoDB;
 
 -- Paramètres initiaux
-INSERT INTO settings (cle, valeur, description) VALUES
+INSERT IGNORE INTO settings (cle, valeur, description) VALUES
 ('hidden_password', '1234', 'Mot de passe pour vente cachée'),
 ('profit_share_porteur', '70', 'Pourcentage porteur par défaut'),
 ('profit_share_associe', '30', 'Pourcentage associé par défaut'),
 ('devise_stock', 'USDT', 'Devise unique pour le stock'),
 ('devises_vente', '["RMB","USD"]', 'Devises de vente disponibles'),
-('app_version', '5.6.0', 'Version de l\'application');
+('pourcentage_caché', '100', 'Pourcentage caché par défaut'),
+('app_version', '5.6.0+', 'Version de l\'application');
 
 -- ============================================================
--- TABLE 8: SESSIONS (Gestion des sessions)
+-- TABLE 12: SESSIONS (Gestion des sessions)
 -- ============================================================
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id VARCHAR(100) PRIMARY KEY,
     user_id VARCHAR(50) NOT NULL,
     token TEXT NOT NULL,
@@ -212,18 +296,20 @@ SELECT
     u.name as user_name,
     u.role as user_role,
     u.email as user_email,
+    cf.nom as fournisseur_nom,
     CASE 
         WHEN t.type = 'vente' AND t.taux_vente_cache IS NOT NULL 
         THEN t.valeur_vente_cachee
         ELSE t.valeur_vente_visible
     END as valeur_vente_finale,
     CASE 
-        WHEN t.type = 'vente' AND t.benefice_cache IS NOT NULL 
-        THEN t.benefice_cache
-        ELSE t.benefice_visible
-    END as benefice_final
+        WHEN t.type = 'vente'
+        THEN (t.montant_paye / NULLIF(t.montant, 0) * 100)
+        ELSE NULL
+    END as pourcentage_paye
 FROM transactions t
-LEFT JOIN users u ON t.user_id = u.id;
+LEFT JOIN users u ON t.user_id = u.id
+LEFT JOIN comptes_fournisseurs cf ON t.id_fournisseur = cf.id;
 
 -- Vue 2: Stock USDT actuel
 CREATE OR REPLACE VIEW vue_stock_usdt AS
@@ -264,11 +350,68 @@ WHERE statut = 'committed'
 GROUP BY DATE(date)
 ORDER BY jour DESC;
 
+-- Vue 5: Distribution des partenaires avec détails
+CREATE OR REPLACE VIEW vue_distribution_details AS
+SELECT 
+    dp.id,
+    dp.transaction_id,
+    t.date,
+    t.type,
+    t.devise_vente,
+    t.quantite_vente,
+    t.taux_vente_visible,
+    t.taux_vente_cache,
+    dp.role,
+    dp.benefice_visible,
+    dp.benefice_cache,
+    dp.pourcentage,
+    (dp.benefice_visible + COALESCE(dp.benefice_cache, 0)) as benefice_total
+FROM distribution_partenaires dp
+LEFT JOIN transactions t ON dp.transaction_id = t.id
+ORDER BY t.date DESC;
+
+-- Vue 6: Extraits de compte clients
+CREATE OR REPLACE VIEW vue_extrait_clients AS
+SELECT 
+    cc.id,
+    cc.nom,
+    cc.numero,
+    cc.adresse,
+    cc.solde,
+    COUNT(t.id) as nb_transactions,
+    SUM(CASE WHEN t.type = 'vente' THEN 1 ELSE 0 END) as nb_ventes,
+    SUM(CASE WHEN t.type = 'achat' THEN 1 ELSE 0 END) as nb_achats,
+    cc.created_at,
+    cc.updated_at
+FROM comptes_clients cc
+LEFT JOIN transactions t ON FIND_IN_SET(cc.nom, t.client) > 0
+GROUP BY cc.id;
+
+-- Vue 7: Extraits de compte fournisseurs
+CREATE OR REPLACE VIEW vue_extrait_fournisseurs AS
+SELECT 
+    cf.id,
+    cf.nom,
+    cf.numero,
+    cf.adresse,
+    cf.solde_xaf,
+    cf.solde_usdt,
+    cf.dette_usdt,
+    COUNT(t.id) as nb_transactions,
+    SUM(CASE WHEN t.type = 'vente' THEN 1 ELSE 0 END) as nb_ventes,
+    SUM(CASE WHEN t.type = 'achat' THEN 1 ELSE 0 END) as nb_achats,
+    cf.created_at,
+    cf.updated_at
+FROM comptes_fournisseurs cf
+LEFT JOIN transactions t ON t.id_fournisseur = cf.id
+GROUP BY cf.id;
+
 -- ============================================================
 -- PROCÉDURES STOCKÉES
 -- ============================================================
 
 -- Procédure 1: Achat USDT
+DROP PROCEDURE IF EXISTS proc_achat_usdt;
 DELIMITER $$
 CREATE PROCEDURE proc_achat_usdt(
     IN p_transaction_id VARCHAR(100),
@@ -336,6 +479,7 @@ END$$
 DELIMITER ;
 
 -- Procédure 2: Finaliser une vente (ajouter données cachées)
+DROP PROCEDURE IF EXISTS proc_finaliser_vente;
 DELIMITER $$
 CREATE PROCEDURE proc_finaliser_vente(
     IN p_transaction_id VARCHAR(100),
@@ -394,6 +538,12 @@ BEGIN
     UPDATE repartition_profits 
     SET total_accumule_cache = total_accumule_cache + v_part_associe
     WHERE role = 'associe';
+    
+    -- Créer entrée dans distribution_partenaires
+    INSERT INTO distribution_partenaires (transaction_id, role, benefice_visible, benefice_cache, pourcentage)
+    VALUES 
+        (p_transaction_id, 'porteur', v_benefice_visible * (p_pct_porteur / 100), v_part_porteur, p_pct_porteur),
+        (p_transaction_id, 'associe', v_benefice_visible * (p_pct_associe / 100), v_part_associe, p_pct_associe);
 END$$
 DELIMITER ;
 
@@ -402,6 +552,7 @@ DELIMITER ;
 -- ============================================================
 
 -- Trigger: Après insertion transaction vente (pending)
+DROP TRIGGER IF EXISTS after_transaction_vente_insert;
 DELIMITER $$
 CREATE TRIGGER after_transaction_vente_insert
 AFTER INSERT ON transactions
@@ -434,9 +585,9 @@ DELIMITER ;
 -- INDEX SUPPLÉMENTAIRES POUR PERFORMANCE
 -- ============================================================
 
-CREATE INDEX idx_transactions_date_type ON transactions(date, type);
-CREATE INDEX idx_transactions_statut_type ON transactions(statut, type);
-CREATE INDEX idx_logs_date_type ON logs(date_heure, type_evenement);
+CREATE INDEX IF NOT EXISTS idx_transactions_date_type ON transactions(date, type);
+CREATE INDEX IF NOT EXISTS idx_transactions_statut_type ON transactions(statut, type);
+CREATE INDEX IF NOT EXISTS idx_logs_date_type ON logs(date_heure, type_evenement);
 
 -- ============================================================
 -- FIN DU SCRIPT

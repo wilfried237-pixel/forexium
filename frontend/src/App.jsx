@@ -4,6 +4,11 @@ import {
   apiCreateTransaction, apiFinaliserVente, apiEditTransaction,
   apiUpdateCmup, apiUpdateProfitShare, apiRegister, apiCheckSlots,
   apiValiderAssoc,
+  // v5.6.0+ nouveaux endpoints
+  apiGetClients, apiCreateClient, apiUpdateClient, apiDeleteClient, apiGetClientExtrait,
+  apiGetFournisseurs, apiCreateFournisseur, apiDeleteFournisseur, apiFournisseurPayment, apiGetFournisseurExtrait,
+  apiGetDevises, apiCreateDevise, apiUpdateDevise, apiDeleteDevise,
+  apiGetDistributionDetails, apiGetDistributionStatus, apiToggleDistribution,
 } from './api.js';
 import {
   DollarSign, TrendingUp, Users, LogOut, Plus, ArrowUpRight, ArrowDownLeft,
@@ -11,7 +16,8 @@ import {
   ShieldCheck, AlertCircle, RefreshCw, Warehouse, Banknote, Clock,
   CheckCircle2, XCircle, AlertTriangle, Filter, Edit2, Info, Lock,
   TrendingDown, Activity, ChevronDown, ChevronUp, Search, Package,
-  ArrowRight, ChevronsUpDown, Layers, PenLine, Shield, Zap
+  ArrowRight, ChevronsUpDown, Layers, PenLine, Shield, Zap,
+  Store, Trash2, CreditCard, LayoutDashboard,
 } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import { format, formatDistanceToNow } from 'date-fns';
@@ -3109,7 +3115,417 @@ const DeviseCard = ({ devise: d, onCmupEdit, t, dark, langue }) => {
   );
 };
 
-const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateProfitShare, onFinalize, onEditTransaction, onCmupUpdate, t, langue, setLangue, dark, setDark, logs, addLog }) => {
+// ─────────────────────────────────────────────────────────────
+// v5.6.0+ PAGE COMPONENTS — reçoivent tk, dark, langue en props
+// ─────────────────────────────────────────────────────────────
+
+const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDeleteClient, apiGetClientExtrait }) => {
+  const [showForm, setShowForm] = useState(false);
+  const [nom, setNom] = useState(''); const [numero, setNumero] = useState(''); const [adresse, setAdresse] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [extraitData, setExtraitData] = useState(null);
+  const [extraitClient, setExtraitClient] = useState(null);
+
+  const handleCreate = async () => {
+    if (!nom || !numero) { toast.error('Nom et numéro requis'); return; }
+    setLoading(true);
+    try { await onCreateClient(nom, numero, adresse); toast.success('Client créé'); setNom(''); setNumero(''); setAdresse(''); setShowForm(false); }
+    catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  const handleDelete = async (id) => {
+    if (!window.confirm('Supprimer ce client ?')) return;
+    try { await onDeleteClient(id); toast.success('Supprimé'); }
+    catch (e) { toast.error(e.message); }
+  };
+  const handleExtrait = async (client) => {
+    try {
+      const data = await apiGetClientExtrait(client.id);
+      setExtraitData(data);
+      setExtraitClient(client);
+    } catch (e) { toast.error('Extrait non disponible'); }
+  };
+
+  const card = { background: tk.card, borderRadius: 14, border: `1px solid ${tk.border}`, padding: '18px 20px', boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
+  const inputStyle = { width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${tk.border}`, background: tk.cardB, color: tk.ink, fontSize: 12, outline: 'none' };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: tk.ink, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Users size={18} color={tk.accent}/> {langue==='fr'?'Gestion des Clients':'Client Management'}
+        </h2>
+        <button onClick={() => setShowForm(v=>!v)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: tk.accent, color: '#0A1628', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
+          <Plus size={14}/> {langue==='fr'?'Nouveau client':'New client'}
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ ...card, borderColor: '#D4AF3740' }}>
+          <h4 style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 700, color: tk.ink }}>{langue==='fr'?'Créer un client':'Create client'}</h4>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Nom *</div><input style={inputStyle} value={nom} onChange={e=>setNom(e.target.value)} placeholder="Nom du client"/></div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Numéro *</div><input style={inputStyle} value={numero} onChange={e=>setNumero(e.target.value)} placeholder="N° de compte"/></div>
+          </div>
+          <div style={{ marginBottom: 12 }}><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>{langue==='fr'?'Adresse':'Address'}</div><input style={inputStyle} value={adresse} onChange={e=>setAdresse(e.target.value)} placeholder="Adresse (optionnel)"/></div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleCreate} disabled={loading} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#22C55E', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>{loading?'…':'Créer'}</button>
+            <button onClick={() => setShowForm(false)} style={{ padding: '8px 16px', borderRadius: 8, border: `1px solid ${tk.border}`, background: 'none', color: tk.sub, cursor: 'pointer', fontSize: 11 }}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      <div style={card}>
+        {clients.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '32px 0', color: tk.faint, fontSize: 13 }}>{langue==='fr'?'Aucun client enregistré':'No clients yet'}</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ borderBottom: `1px solid ${tk.border}` }}>
+                {['Nom','Numéro','Adresse','Tx',''].map((h,i)=>(
+                  <th key={i} style={{ padding: '8px 12px', textAlign: i>=3?'right':'left', color: tk.faint, fontSize: 10, fontWeight: 700, letterSpacing: 0.5 }}>{h.toUpperCase()}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {clients.map((c,i) => (
+                  <tr key={c.id} style={{ borderBottom: i<clients.length-1?`1px solid ${tk.border}`:'none' }}>
+                    <td style={{ padding: '10px 12px', fontWeight: 700, color: tk.ink }}>{c.nom}</td>
+                    <td style={{ padding: '10px 12px', color: tk.sub }}>{c.numero}</td>
+                    <td style={{ padding: '10px 12px', color: tk.faint, fontSize: 11 }}>{c.adresse||'—'}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: tk.sub }}>{c.nb_transactions||0}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                      <button onClick={()=>handleExtrait(c)} title="Extrait" style={{ background:'none', border:'none', cursor:'pointer', color: tk.blue, marginRight: 8 }}><FileText size={14}/></button>
+                      <button onClick={()=>handleDelete(c.id)} title="Supprimer" style={{ background:'none', border:'none', cursor:'pointer', color: '#EF4444' }}><Trash2 size={14}/></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Modal extrait client */}
+      {extraitData && extraitClient && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+          <div style={{ background: tk.card, borderRadius: 16, padding: 24, width: '90%', maxWidth: 600, maxHeight: '80vh', overflow: 'auto', border: `1px solid ${tk.border}` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:tk.ink }}>Extrait — {extraitClient.nom}</h3>
+              <button onClick={()=>setExtraitData(null)} style={{ background:'none', border:'none', cursor:'pointer', color:tk.faint }}><X size={16}/></button>
+            </div>
+            <div style={{ fontSize: 11, color: tk.sub, marginBottom: 12 }}>{(extraitData.transactions||[]).length} transaction(s)</div>
+            {(extraitData.transactions||[]).map((tx,i) => (
+              <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${tk.border}`, fontSize:11 }}>
+                <span style={{color:tk.sub}}>{tx.date ? new Date(tx.date).toLocaleDateString('fr-FR') : '—'}</span>
+                <span style={{color:tk.ink, fontWeight:600}}>{tx.type}</span>
+                <span style={{color:tk.accent, fontWeight:700}}>{Math.round(parseFloat(tx.montant||0)).toLocaleString('fr-FR')} XAF</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, onCreateFournisseur, onDeleteFournisseur, onPaymentFournisseur }) => {
+  const [showForm, setShowForm] = useState(false);
+  const [showPay, setShowPay] = useState(null);
+  const [nom, setNom] = useState(''); const [numero, setNumero] = useState(''); const [adresse, setAdresse] = useState('');
+  const [payMode, setPayMode] = useState('xaf'); const [payMontant, setPayMontant] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const card = { background: tk.card, borderRadius: 14, border: `1px solid ${tk.border}`, padding: '18px 20px', boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
+  const inputStyle = { width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${tk.border}`, background: tk.cardB, color: tk.ink, fontSize: 12, outline: 'none' };
+
+  const handleCreate = async () => {
+    if (!nom || !numero) { toast.error('Nom et numéro requis'); return; }
+    setLoading(true);
+    try { await onCreateFournisseur(nom, numero, adresse); toast.success('Fournisseur créé'); setNom(''); setNumero(''); setAdresse(''); setShowForm(false); }
+    catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  const handleDelete = async (id) => {
+    if (!window.confirm('Supprimer ce fournisseur ?')) return;
+    try { await onDeleteFournisseur(id); toast.success('Supprimé'); }
+    catch (e) { toast.error(e.message); }
+  };
+  const handlePay = async () => {
+    if (!payMontant) { toast.error('Montant requis'); return; }
+    try { await onPaymentFournisseur(showPay, payMode, parseFloat(payMontant)); toast.success(`Paiement ${payMode.toUpperCase()} enregistré`); setShowPay(null); setPayMontant(''); }
+    catch (e) { toast.error(e.message); }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: tk.ink, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Store size={18} color={tk.accent}/> {langue==='fr'?'Gestion des Fournisseurs':'Supplier Management'}
+        </h2>
+        <button onClick={() => setShowForm(v=>!v)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: tk.accent, color: '#0A1628', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
+          <Plus size={14}/> {langue==='fr'?'Nouveau fournisseur':'New supplier'}
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ ...card, borderColor: '#D4AF3740' }}>
+          <h4 style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 700, color: tk.ink }}>Créer un fournisseur</h4>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Nom *</div><input style={inputStyle} value={nom} onChange={e=>setNom(e.target.value)} placeholder="Nom"/></div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Numéro *</div><input style={inputStyle} value={numero} onChange={e=>setNumero(e.target.value)} placeholder="N° compte"/></div>
+          </div>
+          <div style={{ marginBottom: 12 }}><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Adresse</div><input style={inputStyle} value={adresse} onChange={e=>setAdresse(e.target.value)} placeholder="Adresse (optionnel)"/></div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleCreate} disabled={loading} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#22C55E', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>{loading?'…':'Créer'}</button>
+            <button onClick={() => setShowForm(false)} style={{ padding: '8px 16px', borderRadius: 8, border: `1px solid ${tk.border}`, background: 'none', color: tk.sub, cursor: 'pointer', fontSize: 11 }}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      <div style={card}>
+        {fournisseurs.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '32px 0', color: tk.faint, fontSize: 13 }}>Aucun fournisseur enregistré</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ borderBottom: `1px solid ${tk.border}` }}>
+                {['Nom','Numéro','Solde XAF','Solde USDT','Dette USDT',''].map((h,i)=>(
+                  <th key={i} style={{ padding: '8px 12px', textAlign: i>=2?'right':'left', color: tk.faint, fontSize: 10, fontWeight: 700, letterSpacing: 0.5 }}>{h.toUpperCase()}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {fournisseurs.map((f,i) => (
+                  <tr key={f.id} style={{ borderBottom: i<fournisseurs.length-1?`1px solid ${tk.border}`:'none' }}>
+                    <td style={{ padding: '10px 12px', fontWeight: 700, color: tk.ink }}>{f.nom}</td>
+                    <td style={{ padding: '10px 12px', color: tk.sub }}>{f.numero}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: tk.ink }}>{Math.round(parseFloat(f.solde_xaf||0)).toLocaleString('fr-FR')}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: tk.accent }}>{parseFloat(f.solde_usdt||0).toFixed(4)}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: parseFloat(f.dette_usdt||0)>0?'#EF4444':tk.faint }}>
+                      {parseFloat(f.dette_usdt||0)>0 ? parseFloat(f.dette_usdt).toFixed(4) : '—'}
+                    </td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', display:'flex', gap:6, justifyContent:'flex-end' }}>
+                      <button onClick={()=>setShowPay(f.id)} style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${tk.accent}`, background:'none', color:tk.accent, cursor:'pointer', fontSize:10, fontWeight:700 }}>Payer</button>
+                      <button onClick={()=>handleDelete(f.id)} style={{ background:'none', border:'none', cursor:'pointer', color:'#EF4444' }}><Trash2 size={14}/></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Modal paiement fournisseur */}
+      {showPay && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999 }}>
+          <div style={{ background:tk.card, borderRadius:16, padding:24, width:360, border:`1px solid ${tk.border}` }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:16 }}>
+              <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:tk.ink }}>Paiement Fournisseur</h3>
+              <button onClick={()=>{setShowPay(null);setPayMontant('');}} style={{ background:'none', border:'none', cursor:'pointer', color:tk.faint }}><X size={16}/></button>
+            </div>
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:10, color:tk.sub, marginBottom:6 }}>Mode de paiement</div>
+              <div style={{ display:'flex', gap:12 }}>
+                {['xaf','usdt'].map(m => (
+                  <label key={m} style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', fontSize:12, color:tk.ink }}>
+                    <input type="radio" checked={payMode===m} onChange={()=>setPayMode(m)} style={{accentColor:tk.accent}}/> {m.toUpperCase()} {m==='xaf'?'(Caisse)':'(USDT)'}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontSize:10, color:tk.sub, marginBottom:4 }}>Montant {payMode.toUpperCase()}</div>
+              <input type="number" style={inputStyle} value={payMontant} onChange={e=>setPayMontant(e.target.value)} placeholder={`Montant en ${payMode.toUpperCase()}`}/>
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={handlePay} style={{ flex:1, padding:'9px', borderRadius:8, border:'none', background:'#22C55E', color:'#fff', cursor:'pointer', fontWeight:700 }}>Confirmer</button>
+              <button onClick={()=>{setShowPay(null);setPayMontant('');}} style={{ flex:1, padding:'9px', borderRadius:8, border:`1px solid ${tk.border}`, background:'none', color:tk.sub, cursor:'pointer' }}>Annuler</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const DevisesPageInline = ({ devises, dark, langue, tk, onCreateDevise, onDeleteDevise }) => {
+  const [showForm, setShowForm] = useState(false);
+  const [code, setCode] = useState(''); const [nomD, setNomD] = useState(''); const [taux, setTaux] = useState(''); const [desc, setDesc] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const card = { background: tk.card, borderRadius: 14, border: `1px solid ${tk.border}`, padding: '18px 20px', boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
+  const inputStyle = { width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${tk.border}`, background: tk.cardB, color: tk.ink, fontSize: 12, outline: 'none' };
+
+  const handleCreate = async () => {
+    if (!code || !taux) { toast.error('Code et taux requis'); return; }
+    setLoading(true);
+    try { await onCreateDevise(code.toUpperCase(), nomD||code.toUpperCase(), parseFloat(taux), desc); toast.success('Devise créée'); setCode(''); setNomD(''); setTaux(''); setDesc(''); setShowForm(false); }
+    catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  const handleDelete = async (id) => {
+    if (!window.confirm('Supprimer cette devise ?')) return;
+    try { await onDeleteDevise(id); toast.success('Supprimée'); }
+    catch (e) { toast.error(e.message); }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: tk.ink, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <CreditCard size={18} color={tk.accent}/> {langue==='fr'?'Devises (RMB, USD, Personnalisées)':'Currencies'}
+        </h2>
+        <button onClick={() => setShowForm(v=>!v)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: tk.accent, color: '#0A1628', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
+          <Plus size={14}/> {langue==='fr'?'Ajouter devise':'Add currency'}
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ ...card, borderColor: '#D4AF3740' }}>
+          <h4 style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 700, color: tk.ink }}>Nouvelle devise</h4>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Code * (ex: EUR)</div><input style={inputStyle} value={code} onChange={e=>setCode(e.target.value.toUpperCase())} placeholder="EUR" maxLength={10}/></div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Nom</div><input style={inputStyle} value={nomD} onChange={e=>setNomD(e.target.value)} placeholder="Euro"/></div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Taux conversion (1 USDT = ? devise) *</div><input type="number" style={inputStyle} value={taux} onChange={e=>setTaux(e.target.value)} step="0.00001" placeholder="Ex: 7.25"/></div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Description</div><input style={inputStyle} value={desc} onChange={e=>setDesc(e.target.value)} placeholder="Optionnel"/></div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleCreate} disabled={loading} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#22C55E', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>{loading?'…':'Créer'}</button>
+            <button onClick={() => setShowForm(false)} style={{ padding: '8px 16px', borderRadius: 8, border: `1px solid ${tk.border}`, background: 'none', color: tk.sub, cursor: 'pointer', fontSize: 11 }}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 14 }}>
+        {devises.length === 0 ? (
+          <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '40px 0', color: tk.faint, fontSize: 13 }}>Aucune devise</div>
+        ) : devises.map(d => (
+          <div key={d.id||d.code} style={{ background: tk.card, borderRadius: 12, border: `1px solid ${d.is_default?tk.accent+'40':tk.border}`, padding: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 900, color: tk.accent, letterSpacing: 1 }}>{d.code}</div>
+                <div style={{ fontSize: 11, color: tk.sub }}>{d.nom}</div>
+              </div>
+              {d.is_default ? (
+                <span style={{ fontSize: 9, padding: '3px 7px', borderRadius: 5, background: '#22C55E20', color: '#22C55E', fontWeight: 700 }}>DÉFAUT</span>
+              ) : (
+                <button onClick={() => handleDelete(d.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444' }}><Trash2 size={14}/></button>
+              )}
+            </div>
+            <div style={{ fontSize: 10, color: tk.faint }}>Taux</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: tk.ink }}>{parseFloat(d.taux_conversion||0).toFixed(5)}</div>
+            {d.description && <div style={{ fontSize: 10, color: tk.faint, marginTop: 6 }}>{d.description}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const DistributionPageInline = ({ distributionDetails, distributionActive, dark, langue, tk, fmtN, onToggleDistribution }) => {
+  const [loading, setLoading] = useState(false);
+
+  const handleToggle = async () => {
+    setLoading(true);
+    try { const r = await onToggleDistribution(); toast.success(r?.message || 'Mis à jour'); }
+    catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+
+  const card = { background: tk.card, borderRadius: 14, border: `1px solid ${tk.border}`, padding: '18px 20px', marginBottom: 16, boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
+
+  const PartnerSection = ({ role, color, data, label }) => (
+    <div style={card}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <div style={{ width: 8, height: 8, borderRadius: '50%', background: color }}/>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 800, color: tk.ink }}>{label}</h3>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 16 }}>
+        {[
+          { label: 'Ventes', value: data?.nb_ventes||0, plain: true },
+          { label: 'Bénéf. Visible', value: fmtN(data?.total_visible||0)+' XAF', color: '#22C55E' },
+          ...(distributionActive ? [{ label: 'Bénéf. Caché', value: fmtN(data?.total_cache||0)+' XAF', color: '#D4AF37' }] : []),
+          { label: 'Total', value: fmtN(data?.total||0)+' XAF', color: color },
+        ].map((kpi,i) => (
+          <div key={i} style={{ background: dark?'rgba(255,255,255,0.03)':'rgba(0,0,0,0.02)', borderRadius: 8, padding: '10px 12px', textAlign: 'center' }}>
+            <div style={{ fontSize: 10, color: tk.faint, marginBottom: 4 }}>{kpi.label}</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: kpi.color||tk.ink }}>{kpi.value}</div>
+          </div>
+        ))}
+      </div>
+      {/* Tableau détail */}
+      {distributionDetails?.distributions?.[role]?.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead><tr style={{ borderBottom: `1px solid ${tk.border}` }}>
+              {['Date','Devise','Quantité','Taux Visible','Bén. Visible', ...(distributionActive?['Taux Caché','Bén. Caché']:[])].map((h,i)=>(
+                <th key={i} style={{ padding:'6px 8px', textAlign:i<2?'left':'right', color:tk.faint, fontSize:9, fontWeight:700, letterSpacing:0.4 }}>{h.toUpperCase()}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {distributionDetails.distributions[role].map((d, i) => (
+                <tr key={i} style={{ borderBottom: `1px solid ${tk.border}` }}>
+                  <td style={{ padding:'7px 8px', color:tk.sub }}>{d.date ? new Date(d.date).toLocaleDateString('fr-FR') : '—'}</td>
+                  <td style={{ padding:'7px 8px', color:tk.ink, fontWeight:600 }}>{d.devise||'—'}</td>
+                  <td style={{ padding:'7px 8px', textAlign:'right', color:tk.sub }}>{parseFloat(d.quantite||0).toFixed(4)}</td>
+                  <td style={{ padding:'7px 8px', textAlign:'right', color:tk.sub }}>{fmtN(parseFloat(d.taux_visible||0))}</td>
+                  <td style={{ padding:'7px 8px', textAlign:'right', color:'#22C55E', fontWeight:700 }}>{fmtN(parseFloat(d.benefice_visible||0))}</td>
+                  {distributionActive && <>
+                    <td style={{ padding:'7px 8px', textAlign:'right', color:tk.faint }}>{fmtN(parseFloat(d.taux_cache||0))}</td>
+                    <td style={{ padding:'7px 8px', textAlign:'right', color:'#D4AF37', fontWeight:700 }}>{fmtN(parseFloat(d.benefice_cache||0))}</td>
+                  </>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: tk.ink, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <BarChart3 size={18} color={tk.accent}/> {langue==='fr'?'Distribution des Partenaires':'Partner Distribution'}
+        </h2>
+        <button onClick={handleToggle} disabled={loading} style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 16px', borderRadius:8, border:'none', background: distributionActive?'#EF444415':'#22C55E15', color: distributionActive?'#EF4444':'#22C55E', cursor:'pointer', fontSize:11, fontWeight:700 }}>
+          {loading ? '…' : distributionActive ? '🔒 Masquer cachés' : '🔓 Afficher cachés'}
+        </button>
+      </div>
+
+      <div style={{ ...card, background: dark?'rgba(212,175,55,0.06)':'rgba(212,175,55,0.04)', borderColor: '#D4AF3730', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: distributionActive?'#22C55E':'#F59E0B' }}/>
+          <span style={{ fontSize: 12, fontWeight: 700, color: tk.ink }}>Mode: {distributionActive ? '✅ ACTIF — Bénéfices visibles + cachés' : '⏸️ INACTIF — Bénéfices visibles uniquement'}</span>
+        </div>
+      </div>
+
+      {!distributionDetails ? (
+        <div style={{ textAlign:'center', padding:'40px 0', color:tk.faint, fontSize:13 }}>
+          {langue==='fr'?'Données de distribution non disponibles — vérifiez que le backend v5.6.0+ est actif':'Distribution data unavailable'}
+        </div>
+      ) : (
+        <>
+          <PartnerSection role="porteur" color={tk.accent} label={langue==='fr'?"Porteur d'Affaire":'Business Owner'} data={distributionDetails.totals?.porteur}/>
+          <PartnerSection role="associe" color="#3B82F6" label={langue==='fr'?'Associé':'Associate'} data={distributionDetails.totals?.associe}/>
+        </>
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// DASHBOARD
+// ─────────────────────────────────────────────────────────────
+const Dashboard = ({
+  clients, fournisseurs, devises, distributionDetails, distributionActive,
+  onCreateClient, onDeleteClient,
+  onCreateFournisseur, onDeleteFournisseur, onPaymentFournisseur,
+  onCreateDevise, onDeleteDevise,
+  onToggleDistribution,
+  apiGetClientExtrait, apiGetFournisseurExtrait,
+}) => {
   const [showModal, setShowModal] = useState(false);
   const [initialTxType, setInitialTxType] = useState('vente');
   const [showSettings, setShowSettings] = useState(false);
@@ -3124,6 +3540,8 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
   const [chartMetric, setChartMetric] = useState('profit');
   const [showRealPartner, setShowRealPartner] = useState(false);
   const [showVenteDetail, setShowVenteDetail] = useState(false);
+  // ── v5.6.0+ navigation par onglets ──
+  const [page, setPage] = useState('main'); // 'main'|'clients'|'fournisseurs'|'devises'|'distribution'
 
   const isPorteur = user.role === 'porteur';
 
@@ -3397,9 +3815,35 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
         </div>
       </header>
 
+      {/* ── Navigation onglets v5.6.0+ ── */}
+      <div style={{ background: dark ? '#0f1520' : '#fff', borderBottom: `1px solid ${tk.border}`, padding: '0 20px' }}>
+        <div style={{ maxWidth: 1400, margin: '0 auto', display: 'flex', gap: 0 }}>
+          {[
+            { id: 'main',          icon: <LayoutDashboard size={13}/>, label: langue==='fr'?'Tableau de bord':'Dashboard' },
+            { id: 'clients',       icon: <Users size={13}/>,           label: langue==='fr'?'Clients':'Clients' },
+            { id: 'fournisseurs',  icon: <Store size={13}/>,           label: langue==='fr'?'Fournisseurs':'Suppliers' },
+            { id: 'devises',       icon: <CreditCard size={13}/>,      label: langue==='fr'?'Devises':'Currencies' },
+            { id: 'distribution',  icon: <BarChart3 size={13}/>,       label: langue==='fr'?'Distribution':'Distribution' },
+          ].map(tab => (
+            <button key={tab.id} onClick={() => setPage(tab.id)} style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '10px 16px', border: 'none', background: 'none', cursor: 'pointer',
+              fontSize: 11, fontWeight: 700,
+              color: page === tab.id ? tk.accent : tk.sub,
+              borderBottom: page === tab.id ? `2px solid ${tk.accent}` : '2px solid transparent',
+              transition: 'all 0.15s',
+              letterSpacing: 0.3,
+            }}>
+              {tab.icon} {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <main style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 20px' }}>
 
         {/* ── Alerte pending ── */}
+        {page === 'main' && <React.Fragment>
         {isPorteur && pendingCount > 0 && (
           <div style={{
             display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px',
@@ -4046,6 +4490,44 @@ const Dashboard = ({ user, data, profitShare, onLogout, onTransaction, onUpdateP
 
           </div>
         </div>
+        {/* ── FIN page principale ── */}
+        </React.Fragment>}
+
+        {/* ═══════════════════════════════════════
+            PAGE CLIENTS
+        ════════════════════════════════════════ */}
+        {page === 'clients' && <ClientsPageInline
+          clients={clients} dark={dark} langue={langue} tk={tk}
+          onCreateClient={onCreateClient} onDeleteClient={onDeleteClient}
+          apiGetClientExtrait={apiGetClientExtrait}
+        />}
+
+        {/* ═══════════════════════════════════════
+            PAGE FOURNISSEURS
+        ════════════════════════════════════════ */}
+        {page === 'fournisseurs' && <FournisseursPageInline
+          fournisseurs={fournisseurs} dark={dark} langue={langue} tk={tk}
+          onCreateFournisseur={onCreateFournisseur} onDeleteFournisseur={onDeleteFournisseur}
+          onPaymentFournisseur={onPaymentFournisseur}
+        />}
+
+        {/* ═══════════════════════════════════════
+            PAGE DEVISES
+        ════════════════════════════════════════ */}
+        {page === 'devises' && <DevisesPageInline
+          devises={devises} dark={dark} langue={langue} tk={tk}
+          onCreateDevise={onCreateDevise} onDeleteDevise={onDeleteDevise}
+        />}
+
+        {/* ═══════════════════════════════════════
+            PAGE DISTRIBUTION
+        ════════════════════════════════════════ */}
+        {page === 'distribution' && <DistributionPageInline
+          distributionDetails={distributionDetails} distributionActive={distributionActive}
+          dark={dark} langue={langue} tk={tk} fmtN={(v) => Math.round(v).toLocaleString('fr-FR')}
+          onToggleDistribution={onToggleDistribution}
+        />}
+
       </main>
 
       {/* ── Modales ── */}
@@ -4095,6 +4577,13 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [sessionStart, setSessionStart] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // ── v5.6.0+ nouveaux états ──
+  const [clients, setClients] = useState([]);
+  const [fournisseurs, setFournisseurs] = useState([]);
+  const [devises, setDevises] = useState([]);
+  const [distributionDetails, setDistributionDetails] = useState(null);
+  const [distributionActive, setDistributionActive] = useState(false);
 
   const [data, setData] = useState({
     depot: 0,
@@ -4225,6 +4714,27 @@ export default function App() {
           associe: parseFloat(associeR?.pourcentage_defaut || 30),
         });
       }
+
+      // ── v5.6.0+ : Charger clients, fournisseurs, devises, distribution ──
+      try {
+        const [cliRes, fournRes, devRes] = await Promise.allSettled([
+          apiGetClients(),
+          apiGetFournisseurs(),
+          apiGetDevises(),
+        ]);
+        if (cliRes.status === 'fulfilled')   setClients(cliRes.value?.clients || []);
+        if (fournRes.status === 'fulfilled') setFournisseurs(fournRes.value?.fournisseurs || []);
+        if (devRes.status === 'fulfilled')   setDevises(devRes.value?.devises || []);
+      } catch (e) { console.warn('Nouveaux endpoints non disponibles:', e.message); }
+
+      try {
+        const [distDetails, distStatus] = await Promise.allSettled([
+          apiGetDistributionDetails(),
+          apiGetDistributionStatus(),
+        ]);
+        if (distDetails.status === 'fulfilled') setDistributionDetails(distDetails.value);
+        if (distStatus.status === 'fulfilled')  setDistributionActive(distStatus.value?.porteur || false);
+      } catch (e) { console.warn('Distribution non disponible:', e.message); }
     } catch (err) {
       console.error('Erreur chargement API:', err.message);
       toast.error('Erreur chargement des données : ' + err.message);
@@ -4426,6 +4936,54 @@ export default function App() {
     }
   };
 
+  // ── v5.6.0+ handlers clients ──
+  const handleCreateClient = async (nom, numero, adresse) => {
+    await apiCreateClient(nom, numero, adresse);
+    const r = await apiGetClients();
+    setClients(r?.clients || []);
+  };
+  const handleDeleteClient = async (id) => {
+    await apiDeleteClient(id);
+    const r = await apiGetClients();
+    setClients(r?.clients || []);
+  };
+  // ── v5.6.0+ handlers fournisseurs ──
+  const handleCreateFournisseur = async (nom, numero, adresse) => {
+    await apiCreateFournisseur(nom, numero, adresse);
+    const r = await apiGetFournisseurs();
+    setFournisseurs(r?.fournisseurs || []);
+  };
+  const handleDeleteFournisseur = async (id) => {
+    await apiDeleteFournisseur(id);
+    const r = await apiGetFournisseurs();
+    setFournisseurs(r?.fournisseurs || []);
+  };
+  const handlePaymentFournisseur = async (id, mode, montant) => {
+    await apiFournisseurPayment(id, mode, montant);
+    const r = await apiGetFournisseurs();
+    setFournisseurs(r?.fournisseurs || []);
+  };
+  // ── v5.6.0+ handlers devises ──
+  const handleCreateDevise = async (code, nom, taux, description) => {
+    await apiCreateDevise(code, nom, taux, description);
+    const r = await apiGetDevises();
+    setDevises(r?.devises || []);
+  };
+  const handleDeleteDevise = async (id) => {
+    await apiDeleteDevise(id);
+    const r = await apiGetDevises();
+    setDevises(r?.devises || []);
+  };
+  // ── v5.6.0+ handler distribution toggle ──
+  const handleToggleDistribution = async () => {
+    const result = await apiToggleDistribution();
+    setDistributionActive(v => !v);
+    const [d, s] = await Promise.allSettled([apiGetDistributionDetails(), apiGetDistributionStatus()]);
+    if (d.status === 'fulfilled') setDistributionDetails(d.value);
+    if (s.status === 'fulfilled') setDistributionActive(s.value?.porteur || false);
+    return result;
+  };
+
   if (loading && !user) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', background: dark ? '#0f1117' : '#f8f9fa' }}>
       <div style={{ textAlign:'center' }}>
@@ -4454,6 +5012,14 @@ export default function App() {
         onEditTransaction={handleEditTransaction}
         onCmupUpdate={handleCmupUpdate}
         t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
+        clients={clients} fournisseurs={fournisseurs} devises={devises}
+        distributionDetails={distributionDetails} distributionActive={distributionActive}
+        onCreateClient={handleCreateClient} onDeleteClient={handleDeleteClient}
+        onCreateFournisseur={handleCreateFournisseur} onDeleteFournisseur={handleDeleteFournisseur}
+        onPaymentFournisseur={handlePaymentFournisseur}
+        onCreateDevise={handleCreateDevise} onDeleteDevise={handleDeleteDevise}
+        onToggleDistribution={handleToggleDistribution}
+        apiGetClientExtrait={apiGetClientExtrait} apiGetFournisseurExtrait={apiGetFournisseurExtrait}
       />
     </>
   );
