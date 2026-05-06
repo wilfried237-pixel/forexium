@@ -1,18 +1,15 @@
 // ============================================================
-// FOREXIUM v5.6.0+ — Service API (Frontend → Backend)
+// FOREXIUM v5.7.0+ — Service API (Frontend → Backend)
+// Avec support des paiements clients et fournisseurs
 // ============================================================
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
-// ── Helpers ──────────────────────────────────────────────────
-
 const getToken = () => localStorage.getItem('fx_token');
-
 const headers = () => ({
   'Content-Type': 'application/json',
   ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
 });
-
 const handle = async (res) => {
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || json.message || `Erreur ${res.status}`);
@@ -20,289 +17,167 @@ const handle = async (res) => {
 };
 
 // ── AUTH ─────────────────────────────────────────────────────
+export const apiLogin = async (email, password) => handle(await fetch(`${BASE_URL}/auth/login`, { method:'POST', headers:headers(), body:JSON.stringify({email,password}) }));
+export const apiLogout = async () => handle(await fetch(`${BASE_URL}/auth/logout`, { method:'POST', headers:headers() }));
+export const apiRegister = async (name, email, password, role) => handle(await fetch(`${BASE_URL}/auth/register`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,email,password,role}) }));
+export const apiCheckSlots = async () => handle(await fetch(`${BASE_URL}/auth/slots`));
 
-export const apiLogin = async (email, password) => {
-  const res = await fetch(`${BASE_URL}/auth/login`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ email, password }),
-  });
-  return handle(res);
-};
-
-export const apiLogout = async () => {
-  const res = await fetch(`${BASE_URL}/auth/logout`, {
-    method: 'POST',
-    headers: headers(),
-  });
-  return handle(res);
-};
-
-// ── DATA (chargement initial) ─────────────────────────────────
-
+// ── DATA ─────────────────────────────────────────────────────
 export const apiLoadAll = async () => {
-  const [statsRes, txRes, stockRes, settingsRes, repartRes, devisesRes, clientsRes, foursRes] = await Promise.all([
-    fetch(`${BASE_URL}/stats/comptes`,     { headers: headers() }),
-    fetch(`${BASE_URL}/transactions?limit=500`, { headers: headers() }),
-    fetch(`${BASE_URL}/stock`,             { headers: headers() }),
-    fetch(`${BASE_URL}/settings`,          { headers: headers() }),
-    fetch(`${BASE_URL}/stats/repartition`, { headers: headers() }),
-    fetch(`${BASE_URL}/devises`,           { headers: headers() }),
-    fetch(`${BASE_URL}/accounts/clients`,  { headers: headers() }),
-    fetch(`${BASE_URL}/accounts/fournisseurs`, { headers: headers() }),
+  const [c,t,s,se,r] = await Promise.all([
+    fetch(`${BASE_URL}/stats/comptes`,{headers:headers()}),
+    fetch(`${BASE_URL}/transactions?limit=500`,{headers:headers()}),
+    fetch(`${BASE_URL}/stock`,{headers:headers()}),
+    fetch(`${BASE_URL}/settings`,{headers:headers()}),
+    fetch(`${BASE_URL}/stats/repartition`,{headers:headers()}),
   ]);
-
-  const [comptes, txData, stock, settings, repartition, devises, clients, fournisseurs] = await Promise.all([
-    handle(statsRes),
-    handle(txRes),
-    handle(stockRes),
-    handle(settingsRes),
-    handle(repartRes),
-    handle(devisesRes),
-    handle(clientsRes),
-    handle(foursRes),
-  ]);
-
-  return { comptes, txData, stock, settings, repartition, devises, clients, fournisseurs };
+  const [comptes,txData,stock,settings,repartition] = await Promise.all([c,t,s,se,r].map(handle));
+  return {comptes,txData,stock,settings,repartition};
 };
 
 // ── TRANSACTIONS ─────────────────────────────────────────────
+export const apiCreateTransaction = async (payload) => handle(await fetch(`${BASE_URL}/transactions`, { method:'POST', headers:headers(), body:JSON.stringify(payload) }));
+export const apiFinaliserVente = async (txId, d) => handle(await fetch(`${BASE_URL}/transactions/${txId}/finaliser`, { method:'PUT', headers:headers(), body:JSON.stringify({taux_vente_cache:d.tauxCache,pct_porteur:d.porteurPctC,pct_associe:d.associePctC}) }));
+export const apiEditTransaction = async (txId, changes) => handle(await fetch(`${BASE_URL}/transactions/${txId}`, { method:'PUT', headers:headers(), body:JSON.stringify(changes) }));
+export const apiValiderAssoc = async (txId) => handle(await fetch(`${BASE_URL}/transactions/${txId}/valider-assoc`, { method:'PUT', headers:headers() }));
+export const apiValiderTransaction = async (txId, paymentStatus, montantPaye=null) => handle(await fetch(`${BASE_URL}/transactions/${txId}/valider`, { method:'PUT', headers:headers(), body:JSON.stringify({payment_status:paymentStatus,...(montantPaye!==null&&{montant_paye:montantPaye})}) }));
 
-export const apiCreateTransaction = async (payload) => {
-  const res = await fetch(`${BASE_URL}/transactions`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify(payload),
-  });
-  return handle(res);
-};
-
-export const apiFinaliserVente = async (txId, hiddenData) => {
-  const res = await fetch(`${BASE_URL}/transactions/${txId}/finaliser`, {
-    method: 'PUT',
-    headers: headers(),
-    body: JSON.stringify({
-      taux_vente_cache: hiddenData.tauxCache,
-      pct_porteur: hiddenData.porteurPctC,
-      pct_associe: hiddenData.associePctC,
-    }),
-  });
-  return handle(res);
-};
-
-export const apiEditTransaction = async (txId, changes) => {
-  const res = await fetch(`${BASE_URL}/transactions/${txId}`, {
-    method: 'PUT',
-    headers: headers(),
-    body: JSON.stringify(changes),
-  });
-  return handle(res);
-};
-
-// ── STOCK / CMUP ─────────────────────────────────────────────
-
-export const apiUpdateCmup = async (devise, newCmup) => {
-  const res = await fetch(`${BASE_URL}/stock/cmup`, {
-    method: 'PUT',
-    headers: headers(),
-    body: JSON.stringify({ devise, cmup: newCmup }),
-  });
-  return handle(res);
-};
+// ── STOCK ────────────────────────────────────────────────────
+export const apiUpdateCmup = async (devise, newCmup) => handle(await fetch(`${BASE_URL}/stock/cmup`, { method:'PUT', headers:headers(), body:JSON.stringify({devise,cmup:newCmup}) }));
 
 // ── SETTINGS ─────────────────────────────────────────────────
+export const apiUpdateSetting = async (key, valeur) => handle(await fetch(`${BASE_URL}/settings/${key}`, { method:'PUT', headers:headers(), body:JSON.stringify({valeur}) }));
+export const apiUpdateProfitShare = async (porteur, associe) => Promise.all([apiUpdateSetting('profit_share_porteur',String(porteur)),apiUpdateSetting('profit_share_associe',String(associe))]);
 
-export const apiUpdateSetting = async (key, valeur) => {
-  const res = await fetch(`${BASE_URL}/settings/${key}`, {
-    method: 'PUT',
-    headers: headers(),
-    body: JSON.stringify({ valeur }),
-  });
-  return handle(res);
-};
+// ── CLIENTS ──────────────────────────────────────────────────
+export const apiGetClients = async () => handle(await fetch(`${BASE_URL}/accounts/clients`, {headers:headers()}));
 
-export const apiUpdateProfitShare = async (porteur, associe) => {
-  await Promise.all([
-    apiUpdateSetting('profit_share_porteur', String(porteur)),
-    apiUpdateSetting('profit_share_associe', String(associe)),
-  ]);
-};
+export const apiCreateClient = async (nom, telephone, adresse, prenom='') =>
+  handle(await fetch(`${BASE_URL}/accounts/clients`, {
+    method:'POST', headers:headers(),
+    body:JSON.stringify({nom, prenom, telephone, adresse}),
+  }));
 
-// ── INSCRIPTION ──────────────────────────────────────────────
+export const apiUpdateClient = async (clientId, data) =>
+  handle(await fetch(`${BASE_URL}/accounts/clients/${clientId}`, {
+    method:'PUT', headers:headers(), body:JSON.stringify(data),
+  }));
 
-export const apiRegister = async (name, email, password, role) => {
-  const res = await fetch(`${BASE_URL}/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, email, password, role }),
-  });
-  return handle(res);
-};
-
-// Vérifie quels rôles sont déjà pris (porteur / associé)
-export const apiCheckSlots = async () => {
-  const res = await fetch(`${BASE_URL}/auth/slots`);
-  return handle(res);
-};
-
-// ── VALIDATION ASSOC_PENDING (porteur valide une vente associé) ───────────
-export const apiValiderAssoc = async (txId) => {
-  const res = await fetch(`${BASE_URL}/transactions/${txId}/valider-assoc`, {
-    method: 'PUT',
-    headers: headers(),
-  });
-  return handle(res);
-};
-
-// ── COMPTES CLIENTS ──────────────────────────────────────────
-
-export const apiGetClients = async () => {
-  const res = await fetch(`${BASE_URL}/accounts/clients`, { headers: headers() });
-  return handle(res);
-};
-
-export const apiCreateClient = async (nom, numero, adresse) => {
-  const res = await fetch(`${BASE_URL}/accounts/clients`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ nom, numero, adresse }),
-  });
-  return handle(res);
-};
-
-export const apiUpdateClient = async (clientId, data) => {
-  const res = await fetch(`${BASE_URL}/accounts/clients/${clientId}`, {
-    method: 'PUT',
-    headers: headers(),
-    body: JSON.stringify(data),
-  });
-  return handle(res);
-};
-
-export const apiDeleteClient = async (clientId) => {
-  const res = await fetch(`${BASE_URL}/accounts/clients/${clientId}`, {
-    method: 'DELETE',
-    headers: headers(),
-  });
-  return handle(res);
-};
-
-export const apiGetClientTransactions = async (clientId) => {
-  const res = await fetch(`${BASE_URL}/accounts/clients/${clientId}/transactions`, {
-    headers: headers()
-  });
-  return handle(res);
-};
+export const apiDeleteClient = async (clientId) =>
+  handle(await fetch(`${BASE_URL}/accounts/clients/${clientId}`, {method:'DELETE', headers:headers()}));
 
 export const apiGetClientExtrait = async (clientId) => {
-  const res = await fetch(`${BASE_URL}/accounts/extrait/clients/${clientId}`, {
-    headers: headers()
-  });
-  return handle(res);
+  // Endpoint dédié pour récupérer l'extrait détaillé du client
+  try {
+    return handle(await fetch(`${BASE_URL}/payments/clients/${clientId}/account`, {headers:headers()}));
+  } catch (err) {
+    // Fallback: récupérer les transactions
+    const res = await fetch(`${BASE_URL}/transactions?limit=500`, {headers:headers()});
+    const data = await handle(res);
+    return { transactions: data.transactions || [], totals: {} };
+  }
 };
 
-// ── COMPTES FOURNISSEURS ────────────────────────────────────
+// ── PAIEMENTS CLIENTS (NOUVEAU) ──────────────────────────────
+/**
+ * Récupère l'extrait de compte détaillé d'un client
+ * Retourne: { client, transactions, totals }
+ */
+export const apiGetClientPaymentAccount = async (clientId) =>
+  handle(await fetch(`${BASE_URL}/payments/clients/${clientId}/account`, {headers:headers()}));
 
-export const apiGetFournisseurs = async () => {
-  const res = await fetch(`${BASE_URL}/accounts/fournisseurs`, { headers: headers() });
-  return handle(res);
-};
+/**
+ * Enregistre un paiement partiel pour une transaction client
+ */
+export const apiPaymentClientTransaction = async (clientId, transactionId, montantPaye, devisePaiement='XAF') =>
+  handle(await fetch(`${BASE_URL}/payments/clients/${clientId}/transaction/${transactionId}`, {
+    method:'POST',
+    headers:headers(),
+    body:JSON.stringify({montant_paye: montantPaye, devise_paiement: devisePaiement})
+  }));
 
-export const apiCreateFournisseur = async (nom, numero, adresse) => {
-  const res = await fetch(`${BASE_URL}/accounts/fournisseurs`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ nom, numero, adresse }),
-  });
-  return handle(res);
-};
+// ── FOURNISSEURS ─────────────────────────────────────────────
+export const apiGetFournisseurs = async () => handle(await fetch(`${BASE_URL}/accounts/fournisseurs`, {headers:headers()}));
 
-export const apiUpdateFournisseur = async (fournisseurId, data) => {
-  const res = await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}`, {
-    method: 'PUT',
-    headers: headers(),
-    body: JSON.stringify(data),
-  });
-  return handle(res);
-};
+export const apiCreateFournisseur = async (nom, telephone, adresse, prenom='') =>
+  handle(await fetch(`${BASE_URL}/accounts/fournisseurs`, {
+    method:'POST', headers:headers(),
+    body:JSON.stringify({nom, prenom, telephone, adresse}),
+  }));
 
-export const apiDeleteFournisseur = async (fournisseurId) => {
-  const res = await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}`, {
-    method: 'DELETE',
-    headers: headers(),
-  });
-  return handle(res);
-};
+export const apiUpdateFournisseur = async (fournisseurId, data) =>
+  handle(await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}`, {
+    method:'PUT', headers:headers(), body:JSON.stringify(data),
+  }));
 
-export const apiFournisseurPayment = async (fournisseurId, mode, montant) => {
-  const res = await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}/payment`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ mode, montant }),
-  });
-  return handle(res);
-};
+export const apiDeleteFournisseur = async (fournisseurId) =>
+  handle(await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}`, {method:'DELETE', headers:headers()}));
 
-export const apiGetFournisseurTransactions = async (fournisseurId) => {
-  const res = await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}/transactions`, {
-    headers: headers()
-  });
-  return handle(res);
-};
+export const apiFournisseurPayment = async (fournisseurId, mode, montant) =>
+  handle(await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}/payment`, {
+    method:'POST', headers:headers(), body:JSON.stringify({mode, montant}),
+  }));
 
 export const apiGetFournisseurExtrait = async (fournisseurId) => {
-  const res = await fetch(`${BASE_URL}/accounts/extrait/fournisseurs/${fournisseurId}`, {
-    headers: headers()
-  });
-  return handle(res);
+  try {
+    // Essai d'abord l'endpoint dédié de paiements
+    return handle(await fetch(`${BASE_URL}/payments/fournisseurs/${fournisseurId}/account`, {headers:headers()}));
+  } catch (err) {
+    // Fallback
+    const res = await fetch(`${BASE_URL}/transactions?limit=500`, {headers:headers()});
+    const data = await handle(res);
+    return {
+      transactions: data.transactions || [],
+      paymentHistory: [],
+      totals: {},
+    };
+  }
 };
 
-// ── DEVISES ────────────────────────────────────────────────
+// ── PAIEMENTS FOURNISSEURS (NOUVEAU) ────────────────────────
+/**
+ * Récupère l'extrait de compte détaillé d'un fournisseur
+ * Retourne: { fournisseur, transactions, paymentHistory, totals }
+ */
+export const apiGetFournisseurPaymentAccount = async (fournisseurId) =>
+  handle(await fetch(`${BASE_URL}/payments/fournisseurs/${fournisseurId}/account`, {headers:headers()}));
 
-export const apiGetDevises = async () => {
-  const res = await fetch(`${BASE_URL}/devises`, { headers: headers() });
-  return handle(res);
-};
+/**
+ * Enregistre un paiement au fournisseur
+ * @param fournisseurId - ID du fournisseur
+ * @param montant - Montant à payer
+ * @param devise - 'XAF' ou 'USDT'
+ * @param transactionId - (optionnel) ID de la transaction pour lier le paiement
+ */
+export const apiPayFournisseur = async (fournisseurId, montant, devise='XAF', transactionId=null) =>
+  handle(await fetch(`${BASE_URL}/payments/fournisseurs/${fournisseurId}/pay`, {
+    method:'POST',
+    headers:headers(),
+    body:JSON.stringify({montant, devise, transaction_id: transactionId})
+  }));
 
-export const apiCreateDevise = async (code, nom, taux_conversion, description) => {
-  const res = await fetch(`${BASE_URL}/devises`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ code, nom, taux_conversion, description }),
-  });
-  return handle(res);
-};
+// ── PAIEMENTS CLIENTS (ancienne API) ────────────────────────
+export const apiPayClient = async (clientId, transaction_id, montant_paye, mode_paiement='XAF') =>
+  handle(await fetch(`${BASE_URL}/accounts/clients/${clientId}/payment`, {
+    method:'PUT', headers:headers(), body:JSON.stringify({transaction_id, montant_paye, mode_paiement}),
+  }));
 
-export const apiUpdateDevise = async (deviseId, data) => {
-  const res = await fetch(`${BASE_URL}/devises/${deviseId}`, {
-    method: 'PUT',
-    headers: headers(),
-    body: JSON.stringify(data),
-  });
-  return handle(res);
-};
+// ── PAIEMENTS FOURNISSEURS (ancienne API) ──────────────────
+export const apiPayFournisseurOld = async (fournisseurId, transaction_id, montant_paye, mode_paiement='XAF') =>
+  handle(await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}/payment`, {
+    method:'PUT', headers:headers(), body:JSON.stringify({transaction_id, montant_paye, mode_paiement}),
+  }));
 
-export const apiDeleteDevise = async (deviseId) => {
-  const res = await fetch(`${BASE_URL}/devises/${deviseId}`, {
-    method: 'DELETE',
-    headers: headers(),
-  });
-  return handle(res);
-};
+// ── DEVISES ──────────────────────────────────────────────────
+export const apiGetDevises = async () => handle(await fetch(`${BASE_URL}/devises`, {headers:headers()}));
+export const apiCreateDevise = async (code, nom, taux_conversion, description) => handle(await fetch(`${BASE_URL}/devises`, {method:'POST', headers:headers(), body:JSON.stringify({code,nom,taux_conversion,description})}));
+export const apiUpdateDevise = async (deviseId, data) => handle(await fetch(`${BASE_URL}/devises/${deviseId}`, {method:'PUT', headers:headers(), body:JSON.stringify(data)}));
+export const apiDeleteDevise = async (deviseId) => handle(await fetch(`${BASE_URL}/devises/${deviseId}`, {method:'DELETE', headers:headers()}));
 
-// ── DISTRIBUTION PARTENAIRES ───────────────────────────────
+// ── DISTRIBUTION ─────────────────────────────────────────────
+export const apiGetDistributionDetails = async () => handle(await fetch(`${BASE_URL}/stats/distribution-details`, {headers:headers()}));
+export const apiToggleDistribution = async () => handle(await fetch(`${BASE_URL}/stats/toggle-distribution`, {method:'POST', headers:headers()}));
 
-export const apiGetDistributionDetails = async () => {
-  const res = await fetch(`${BASE_URL}/stats/distribution-details`, {
-    headers: headers()
-  });
-  return handle(res);
-};
-
-export const apiToggleDistribution = async () => {
-  const res = await fetch(`${BASE_URL}/stats/toggle-distribution`, {
-    method: 'POST',
-    headers: headers()
-  });
-  return handle(res);
-};
+// ── RESET DONNÉES ─────────────────────────────────────────────
+export const apiResetData = async () =>
+  handle(await fetch(`${BASE_URL}/settings/reset-data`, { method:'POST', headers:headers() }));

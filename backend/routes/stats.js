@@ -46,86 +46,96 @@ router.get('/repartition', asyncHandler(async (req, res) => {
 }));
 
 // ─────────────────────────────────────────────────────────────
-// NEW: GET /api/stats/distribution-details
-// Tableau de distribution avec détails des bénéfices par vente
+// GET /api/stats/distribution-details
+// Recalculé directement depuis la table `transactions`
+// (les tables distribution / distribution_partenaires ont été supprimées)
 // ─────────────────────────────────────────────────────────────
 router.get('/distribution-details', asyncHandler(async (req, res) => {
-  const distributions = await query(`
-    SELECT 
-      dp.id,
-      dp.transaction_id,
+  const ventes = await query(`
+    SELECT
+      t.id              AS transaction_id,
       t.date,
       t.type,
       t.devise_vente,
       t.quantite_vente,
       t.taux_vente_visible,
       t.taux_vente_cache,
-      dp.role,
-      dp.benefice_visible,
-      dp.benefice_cache,
-      dp.pourcentage,
-      (dp.benefice_visible + COALESCE(dp.benefice_cache, 0)) as benefice_total,
-      t.user_name,
+      t.part_porteur_visible,
+      t.part_porteur_cachee,
+      t.part_associe_visible,
+      t.part_associe_cachee,
+      t.pourcentage_porteur,
+      t.pourcentage_associe,
+      u.name            AS user_name,
       t.client,
-      t.fournisseur
-    FROM distribution_partenaires dp
-    LEFT JOIN transactions t ON dp.transaction_id = t.id
-    WHERE t.statut = 'committed'
+      COALESCE(cf.nom, t.fournisseur) AS fournisseur_nom
+    FROM transactions t
+    LEFT JOIN users u ON t.user_id = u.id
+    LEFT JOIN comptes_fournisseurs cf ON t.id_fournisseur = cf.id
+    WHERE t.statut = 'committed' AND t.type = 'vente'
     ORDER BY t.date DESC
   `);
 
-  // Regrouper par rôle
-  const detailsParRole = {};
-  distributions.forEach(d => {
-    if (!detailsParRole[d.role]) {
-      detailsParRole[d.role] = [];
-    }
-    detailsParRole[d.role].push({
-      id: d.id,
-      transaction_id: d.transaction_id,
-      date: d.date,
-      type: d.type,
-      devise: d.devise_vente,
-      quantite: parseFloat(d.quantite_vente || 0),
-      taux_visible: parseFloat(d.taux_vente_visible || 0),
-      taux_cache: parseFloat(d.taux_vente_cache || 0),
-      benefice_visible: parseFloat(d.benefice_visible || 0),
-      benefice_cache: parseFloat(d.benefice_cache || 0),
-      benefice_total: parseFloat(d.benefice_total || 0),
-      pourcentage: parseInt(d.pourcentage || 0),
-      client: d.client,
-      fournisseur: d.fournisseur,
+  const detailsParRole = { porteur: [], associe: [] };
+
+  ventes.forEach(v => {
+    const baseRow = {
+      transaction_id: v.transaction_id,
+      date:           v.date,
+      type:           v.type,
+      devise:         v.devise_vente,
+      quantite:       parseFloat(v.quantite_vente || 0),
+      taux_visible:   parseFloat(v.taux_vente_visible || 0),
+      taux_cache:     parseFloat(v.taux_vente_cache || 0),
+      client:         v.client,
+      fournisseur:    v.fournisseur_nom,
+      user_name:      v.user_name,
+    };
+
+    const porteurVisible = parseFloat(v.part_porteur_visible || 0);
+    const porteurCache   = parseFloat(v.part_porteur_cachee  || 0);
+    detailsParRole.porteur.push({
+      ...baseRow,
+      role: 'porteur',
+      benefice_visible: porteurVisible,
+      benefice_cache:   porteurCache,
+      benefice_total:   porteurVisible + porteurCache,
+      pourcentage:      parseInt(v.pourcentage_porteur || 0),
+    });
+
+    const associeVisible = parseFloat(v.part_associe_visible || 0);
+    const associeCache   = parseFloat(v.part_associe_cachee  || 0);
+    detailsParRole.associe.push({
+      ...baseRow,
+      role: 'associe',
+      benefice_visible: associeVisible,
+      benefice_cache:   associeCache,
+      benefice_total:   associeVisible + associeCache,
+      pourcentage:      parseInt(v.pourcentage_associe || 0),
     });
   });
 
-  // Calculer les totaux par rôle
   const totalsParRole = {};
   ['porteur', 'associe'].forEach(role => {
-    const dists = detailsParRole[role] || [];
+    const dists = detailsParRole[role];
     totalsParRole[role] = {
-      nb_ventes: dists.length,
-      total_visible: dists.reduce((sum, d) => sum + d.benefice_visible, 0),
-      total_cache: dists.reduce((sum, d) => sum + d.benefice_cache, 0),
-      total: dists.reduce((sum, d) => sum + d.benefice_total, 0),
+      nb_ventes:     dists.length,
+      total_visible: dists.reduce((s, d) => s + d.benefice_visible, 0),
+      total_cache:   dists.reduce((s, d) => s + d.benefice_cache,   0),
+      total:         dists.reduce((s, d) => s + d.benefice_total,   0),
     };
   });
 
   res.json({
     distributions: detailsParRole,
-    totals: totalsParRole
+    totals:        totalsParRole,
   });
 }));
 
-// ─────────────────────────────────────────────────────────────
-// NEW: POST /api/stats/toggle-distribution
-// Activer/Désactiver l'affichage des bénéfices cachés
-// ─────────────────────────────────────────────────────────────
 router.post('/toggle-distribution', asyncHandler(async (req, res) => {
   const { role } = req.body;
   
-  // Si pas de rôle spécifié, faire le toggle pour tous les rôles
   if (!role) {
-    // Basculer l'état pour les deux rôles
     const current = await query('SELECT distribution_active FROM repartition_profits WHERE role = ?', ['porteur']);
     const newState = !current[0].distribution_active;
 
@@ -142,7 +152,6 @@ router.post('/toggle-distribution', asyncHandler(async (req, res) => {
       message: newState ? 'Distribution activée' : 'Distribution désactivée'
     });
   } else {
-    // Toggle pour un rôle spécifique
     const current = await query('SELECT distribution_active FROM repartition_profits WHERE role = ?', [role]);
     if (!current || current.length === 0) {
       return res.status(400).json({ error: 'Rôle invalide' });
@@ -166,10 +175,6 @@ router.post('/toggle-distribution', asyncHandler(async (req, res) => {
   }
 }));
 
-// ─────────────────────────────────────────────────────────────
-// NEW: GET /api/stats/distribution-status
-// Vérifie l'état de la distribution (activée ou non)
-// ─────────────────────────────────────────────────────────────
 router.get('/distribution-status', asyncHandler(async (req, res) => {
   const status = await query('SELECT role, distribution_active FROM repartition_profits ORDER BY role');
   
@@ -181,7 +186,6 @@ router.get('/distribution-status', asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-// GET /api/stats/daily
 router.get('/daily', asyncHandler(async (req, res) => {
   const { days = 30 } = req.query;
   const rows = await query(
@@ -200,10 +204,6 @@ router.get('/daily', asyncHandler(async (req, res) => {
   });
 }));
 
-// ─────────────────────────────────────────────────────────────
-// NEW: GET /api/stats/extraits
-// Vue d'ensemble des extraits de compte
-// ─────────────────────────────────────────────────────────────
 router.get('/extraits', asyncHandler(async (req, res) => {
   const clients = await query('SELECT * FROM vue_extrait_clients');
   const fournisseurs = await query('SELECT * FROM vue_extrait_fournisseurs');

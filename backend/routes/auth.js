@@ -65,7 +65,7 @@ router.post('/register', asyncHandler(async (req, res) => {
   res.status(201).json({
     success: true,
     message: 'Compte créé avec succès',
-    user: { id: userId, email, role, name },
+    users: { id: userId, email, role, name },
   });
 }));
 

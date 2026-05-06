@@ -3,12 +3,12 @@ import {
   apiLogin, apiLogout, apiLoadAll,
   apiCreateTransaction, apiFinaliserVente, apiEditTransaction,
   apiUpdateCmup, apiUpdateProfitShare, apiRegister, apiCheckSlots,
-  apiValiderAssoc,
+  apiValiderAssoc, apiValiderTransaction,
   // v5.6.0+ nouveaux endpoints
-  apiGetClients, apiCreateClient, apiUpdateClient, apiDeleteClient, apiGetClientExtrait,
-  apiGetFournisseurs, apiCreateFournisseur, apiDeleteFournisseur, apiFournisseurPayment, apiGetFournisseurExtrait,
+  apiGetClients, apiCreateClient, apiUpdateClient, apiDeleteClient, apiGetClientExtrait, apiPayClient,
+  apiGetFournisseurs, apiCreateFournisseur, apiUpdateFournisseur, apiDeleteFournisseur, apiFournisseurPayment, apiGetFournisseurExtrait, apiPayFournisseur,
   apiGetDevises, apiCreateDevise, apiUpdateDevise, apiDeleteDevise,
-  apiGetDistributionDetails, apiGetDistributionStatus, apiToggleDistribution,
+  apiGetDistributionDetails, apiToggleDistribution,
 } from './api.js';
 import {
   DollarSign, TrendingUp, Users, LogOut, Plus, ArrowUpRight, ArrowDownLeft,
@@ -1009,17 +1009,34 @@ const LoginScreen = ({ onLogin, onRegister, langue, setLangue, dark, setDark, t 
 // Vente ASSOCIÉ : uniquement les champs visibles, pas de section cachée
 // Achat: prix total → taux calculé, context panel stock+CMUP
 // ─────────────────────────────────────────────────────────────
-const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark, langue, initialType = 'vente' }) => {
+const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark, langue, initialType = 'vente', fournisseurs = [], clients = [], devises = [] }) => {
   const [type, setType] = useState(initialType);
   const [useCaisse, setUseCaisse] = useState(false);
   const isPorteur = user?.role === 'porteur';
 
+  // Liste devises disponibles pour la vente
+  const devisesVenteOptions = devises.length > 0
+    ? devises.map(d => ({ code: d.code, label: `${d.code} — ${d.nom}` }))
+    : DEVISES_VENTE;
+
+  // ── Date de l'opération (peut être différente de la date d'enregistrement) ──
+  const todayStr = new Date().toISOString().split('T')[0];
+  const [dateOperation, setDateOperation] = useState(todayStr);
+
   // État commun
   const [form, setForm] = useState({
     devise: 'USDT', quantite: '', client: '',
-    fournisseur: '', categorie: CATEGORIES[0], description: '',
-    beneficiaire: '', transfertMontant: ''
+    fournisseur: '', id_fournisseur: '',
+    categorie: CATEGORIES[0], description: '',
+    beneficiaire: '', transfertMontant: '',
+    montantPaye: '',
   });
+
+  // États formulaire nouveau client inline
+  const [showNewClient, setShowNewClient] = useState(false);
+  const [newClientForm, setNewClientForm] = useState({ nom:'', prenom:'', telephone:'', ville:'', quartier:'' });
+  const [savingClient, setSavingClient] = useState(false);
+  const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
   // ── État VENTE USDT → RMB/USD ──
   const [deviseVente, setDeviseVente] = useState('RMB');
@@ -1041,13 +1058,14 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
   React.useEffect(() => {
     if (!isPorteur) return;
     const handler = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'H') {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
         e.preventDefault();
+        e.stopPropagation();
         setHiddenUnlocked(prev => { if (!prev) setTauxCache(''); return !prev; });
       }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, [isPorteur]);
 
   const handleHiddenTap = () => {
@@ -1132,7 +1150,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
     if (type === 'restock') {
       const m = parseFloat(form.transfertMontant) || 0;
       if (!m || m <= 0) { toast.error(t.allFieldsRequired); return; }
-      onSubmit({ type: 'restock', montant: m }); return;
+      onSubmit({ type: 'restock', montant: m, date: dateOperation }); return;
     }
 
     // VENTE → porteur: soumis comme committed avec données cachées si section déverrouillée
@@ -1141,6 +1159,10 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
       if (!form.client.trim()) { toast.error(t.clientRequired); return; }
       if (!qte || !conv || !tvV) { toast.error(t.allFieldsRequired); return; }
       if (usdtConso > stockActuel) { toast.error(t.insufficientStock + ' (USDT)'); return; }
+
+      const montantPayeNum = form.montantPaye
+        ? parseFloat(form.montantPaye.replace(/\s/g,'').replace(',','.').replace(/[^0-9.]/g,''))||0
+        : null;
 
       const basePayload = {
         type: 'vente',
@@ -1162,6 +1184,10 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
         associePct: pctAV,
         usdtConsomme: usdtConso,
         client: form.client,
+        fournisseur: form.fournisseur || null,
+        idFournisseur: form.id_fournisseur ? parseInt(form.id_fournisseur) : null,
+        montant_paye: montantPayeNum,
+        date: dateOperation,
       };
 
       // Porteur avec section cachée déverrouillée et taux caché renseigné → committed immédiat
@@ -1201,6 +1227,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
         fournisseur: form.fournisseur,
         sourceCompte: useCaisse ? 'caisse' : 'depot',
         profit: null, partPorteur: null, partAssocie: null,
+        date: dateOperation,
       }); return;
     }
 
@@ -1214,6 +1241,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
         montant, taux: montant, quantite: 1,
         categorie: form.categorie, description: form.description,
         profit: null, partPorteur: null, partAssocie: null,
+        date: dateOperation,
       }); return;
     }
 
@@ -1227,6 +1255,7 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
         montant, taux: montant, quantite: 1,
         beneficiaire: form.beneficiaire, description: form.description,
         profit: null, partPorteur: null, partAssocie: null,
+        date: dateOperation,
       }); return;
     }
   };
@@ -1260,6 +1289,25 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+
+          {/* ── DATE DE L'OPÉRATION ─────────────────────────────── */}
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:10,
+            background: dark ? 'rgba(255,200,50,0.08)' : 'rgba(255,160,0,0.07)',
+            border: `1px solid ${dark ? 'rgba(255,200,50,0.25)' : 'rgba(255,160,0,0.3)'}` }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={dark?'#fbbf24':'#d97706'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+            <label style={{ fontSize:12, fontWeight:600, color: dark?'#fbbf24':'#d97706', flex:1 }}>
+              {langue==='fr' ? "Date de l'opération" : "Operation date"}
+              <span style={{ fontWeight:400, fontSize:11, marginLeft:6, color: dark?'#9ca3af':'#9ca3af' }}>
+                {langue==='fr' ? '(peut différer de la date d\'enregistrement)' : '(may differ from registration date)'}
+              </span>
+            </label>
+            <input type="date" value={dateOperation} max={new Date().toISOString().split('T')[0]}
+              onChange={e => setDateOperation(e.target.value)}
+              style={{ fontSize:13, fontWeight:600, border:'none', background:'transparent',
+                color: dark?'#fbbf24':'#d97706', outline:'none', cursor:'pointer' }} />
+          </div>
 
           {/* ── RESTOCK ─────────────────────── */}
           {type === 'restock' && (
@@ -1303,20 +1351,19 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
                   value={`${(stockActuel * cmupUsdt).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} XAF`} />
               </ContextPanel>
 
-              {/* 1. Devise de vente */}
+              {/* 1. Devise de vente — badge + dropdown */}
               <div>
                 <label className={`block text-sm font-semibold mb-2 ${dark ? 'text-gray-300' : 'text-gray-700'}`}>{t.deviseVente}</label>
-                <div className="flex gap-3">
-                  {DEVISES_VENTE.map(dv => (
-                    <button key={dv.code} type="button" onClick={() => setDeviseVente(dv.code)}
-                      className={`flex-1 py-3 rounded-xl font-bold text-sm border-2 transition-all ${
-                        deviseVente === dv.code
-                          ? 'border-accent bg-accent/10 text-accent'
-                          : dark ? 'border-gray-600 bg-gray-800 text-gray-300' : 'border-gray-200 bg-gray-50 text-gray-600'
-                      }`}>
-                      {dv.label}
-                    </button>
-                  ))}
+                <div className="flex gap-2 items-center">
+                  <div className="flex-shrink-0 px-4 py-3 rounded-xl font-bold text-sm border-2 border-accent bg-accent/10 text-accent min-w-[72px] text-center">
+                    {deviseVente}
+                  </div>
+                  <select value={deviseVente} onChange={e => setDeviseVente(e.target.value)}
+                    className={`flex-1 px-4 py-3 rounded-xl border-2 text-sm outline-none transition-all ${dark ? 'border-gray-600 bg-gray-800 text-white' : 'border-gray-200 bg-white'} focus:border-accent`}>
+                    {devisesVenteOptions.map(dv => (
+                      <option key={dv.code} value={dv.code}>{dv.label}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -1373,16 +1420,99 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
                 </div>
               </div>
 
-              {/* 4. Client */}
-              <div className="space-y-1.5">
-                <label className={`block text-sm font-semibold ${dark ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Client <span className="text-red-500 ml-1 text-xs">({t.obligatoire})</span>
-                </label>
-                <input type="text" value={form.client}
-                  onChange={e => setForm({ ...form, client: e.target.value })}
-                  placeholder={t.clientPlaceholder}
-                  className={`w-full px-4 py-3 rounded-xl border-2 text-sm outline-none transition-all ${dark ? 'border-gray-600 bg-gray-800 text-white placeholder-gray-500' : 'border-gray-200 bg-white'} focus:border-accent`} />
+              {/* 4. Client — dropdown + création rapide */}
+              <div className={`rounded-2xl border-2 overflow-hidden ${dark?'border-gray-700':'border-gray-100'}`}>
+                <div className={`px-4 py-3 flex items-center border-b ${dark?'bg-gray-700/60 border-gray-600':'bg-white border-gray-100'}`}>
+                  <span className={`text-xs font-bold uppercase tracking-wider ${dark?'text-gray-300':'text-gray-500'}`}>
+                    👤 Client <span className="text-red-400 ml-1">*</span>
+                  </span>
+                </div>
+                  <div className="p-3">
+                    <select value={form.client} onChange={e=>setForm({...form,client:e.target.value})}
+                      className={`w-full px-4 py-3 rounded-xl border text-sm outline-none ${dark?'border-gray-600 bg-gray-700 text-white':'border-gray-200 bg-white'} focus:border-accent`}>
+                      <option value="">{langue==='fr'?'— Sélectionner un client —':'— Select a client —'}</option>
+                      {clients.map(c=>(
+                        <option key={c.id} value={[c.nom,c.prenom].filter(Boolean).join(' ')}>
+                          {c.nom}{c.prenom?` ${c.prenom}`:''}{c.numero?` · #${c.numero}`:''}{c.ville?` · ${c.ville}`:''}
+                        </option>
+                      ))}
+                    </select>
+                    {form.client&&<div className="flex items-center gap-2 mt-2 px-1"><div className="w-2 h-2 rounded-full bg-accent"/><span className={`text-xs font-semibold ${dark?'text-gray-300':'text-gray-600'}`}>{form.client}</span></div>}
+                  </div>
               </div>
+
+              {/* 4b. Fournisseur optionnel */}
+              <div className="space-y-1.5">
+                <label className={`block text-sm font-semibold ${dark?'text-gray-300':'text-gray-700'}`}>
+                  🏭 {langue==='fr'?'Via fournisseur':'Via supplier'} <span className={`text-xs font-normal ml-1 ${dark?'text-gray-500':'text-gray-400'}`}>({langue==='fr'?'optionnel':'optional'})</span>
+                </label>
+                <select value={form.id_fournisseur}
+                  onChange={e=>setForm({...form,id_fournisseur:e.target.value,fournisseur:e.target.options[e.target.selectedIndex]?.text||''})}
+                  className={`w-full px-4 py-3 rounded-xl border-2 text-sm outline-none ${dark?'border-gray-600 bg-gray-800 text-white':'border-gray-200 bg-white'} focus:border-accent`}>
+                  <option value="">{langue==='fr'?'— Aucun fournisseur —':'— No supplier —'}</option>
+                  {fournisseurs.map(f=>(
+                    <option key={f.id} value={f.id}>{f.nom}{f.prenom?` ${f.prenom}`:''}{f.ville?` (${f.ville})`:''}{f.numero?` · #${f.numero}`:''}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 5. PAIEMENT — montant reçu unique */}
+              {(() => {
+                const montantVente = valVenteV || 0;
+                const montantRecu = parseFloat((form.montantPaye||'').replace(/\s/g,'').replace(',','.').replace(/[^0-9.]/g,''))||0;
+                const reste = montantVente - montantRecu;
+                const status = !form.montantPaye ? null
+                  : montantRecu <= 0 ? 'unpaid'
+                  : montantRecu > montantVente ? 'overpaid'
+                  : montantRecu < montantVente ? 'partial'
+                  : 'paid';
+                const statusCfg = {
+                  paid:    {label:'✅ Payé',    color:'#10B981',bg:'#10B98118',border:'border-emerald-500'},
+                  partial: {label:'⚡ Partiel', color:'#D97706',bg:'#F59E0B18',border:'border-amber-500'},
+                  overpaid:{label:'⭐ Surplus',  color:'#7C3AED',bg:'#7C3AED18',border:'border-violet-500'},
+                  unpaid:  {label:'⏳ Non payé',color:'#EF4444',bg:'#EF444418',border:'border-red-500'},
+                };
+                const cfg = status ? statusCfg[status] : null;
+                return (
+                  <div className={`rounded-2xl border-2 overflow-hidden transition-all ${cfg?cfg.border:(dark?'border-gray-700':'border-gray-200')}`}>
+                    <div className={`px-4 py-3 border-b flex items-center justify-between ${dark?'border-gray-700 bg-gray-800/40':'border-gray-100 bg-gray-50'}`}>
+                      <span className={`text-xs font-bold uppercase tracking-wider ${dark?'text-gray-300':'text-gray-500'}`}>💳 {langue==='fr'?'Paiement reçu':'Payment received'}</span>
+                      {cfg&&<span className="text-xs font-bold px-3 py-1 rounded-full" style={{color:cfg.color,background:cfg.bg}}>{cfg.label}</span>}
+                    </div>
+                    <div className="p-4 space-y-3">
+                      {montantVente>0&&(
+                        <div className={`flex items-center justify-between px-3 py-2 rounded-xl ${dark?'bg-gray-700/50':'bg-gray-100'}`}>
+                          <span className={`text-xs font-semibold ${dark?'text-gray-400':'text-gray-500'}`}>{langue==='fr'?'Montant de la vente :':'Sale amount:'}</span>
+                          <span className={`text-sm font-bold ${dark?'text-white':'text-gray-800'}`}>{Math.round(montantVente).toLocaleString('fr-FR')} XAF</span>
+                        </div>
+                      )}
+                      <div>
+                        <label className={`block text-xs font-semibold mb-1.5 ${dark?'text-gray-400':'text-gray-500'}`}>
+                          {langue==='fr'?'Montant reçu du client (XAF) — laisser vide si non payé':'Amount received (XAF) — leave empty if unpaid'}
+                        </label>
+                        <div className={`flex items-center border-2 rounded-xl overflow-hidden ${cfg?cfg.border:(dark?'border-gray-600':'border-gray-200')} ${dark?'bg-gray-800':'bg-white'}`}>
+                          <input type="text" inputMode="numeric" value={form.montantPaye||''}
+                            onChange={e=>{
+                              const raw=e.target.value.replace(/[^0-9]/g,'');
+                              setForm({...form,montantPaye:raw?parseInt(raw).toLocaleString('fr-FR'):''});
+                            }}
+                            placeholder="0"
+                            className={`flex-1 px-4 py-3 text-right text-base font-bold bg-transparent outline-none ${dark?'text-white':'text-gray-800'}`}/>
+                          <span className={`px-4 text-sm font-bold flex-shrink-0 ${dark?'text-gray-400':'text-gray-500'}`}>XAF</span>
+                        </div>
+                      </div>
+                      {form.montantPaye&&montantVente>0&&(
+                        <div className={`flex items-center justify-between px-3 py-2 rounded-xl`} style={{background:cfg?.bg||'transparent'}}>
+                          <span className="text-xs font-semibold" style={{color:cfg?.color}}>
+                            {reste>0?(langue==='fr'?'Reste à recouvrer :':'Remaining:'):reste<0?(langue==='fr'?'Surplus (crédit) :':'Surplus (credit):'):(langue==='fr'?'Transaction soldée ✅':'Fully paid ✅')}
+                          </span>
+                          {reste!==0&&<span className="text-sm font-bold" style={{color:cfg?.color}}>{Math.abs(Math.round(reste)).toLocaleString('fr-FR')} XAF</span>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* 5. Répartition visible */}
               <div className={`rounded-xl border-2 p-4 ${dark ? 'bg-gray-800 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
@@ -1627,8 +1757,17 @@ const TransactionModal = ({ data, profitShare, user, onClose, onSubmit, t, dark,
                 </div>
               )}
 
-              <Input label={t.supplier} dark={dark}
-                value={form.fournisseur} onChange={e => setForm({ ...form, fournisseur: e.target.value })} />
+              <div className="space-y-1.5">
+                <label className={`block text-sm font-semibold mb-1.5 ${dark?'text-gray-300':'text-gray-700'}`}>{t.supplier}</label>
+                <select value={form.id_fournisseur}
+                  onChange={e=>setForm({...form,id_fournisseur:e.target.value,fournisseur:e.target.options[e.target.selectedIndex]?.text||''})}
+                  className={`w-full px-4 py-3 rounded-xl border-2 text-sm outline-none ${dark?'border-gray-600 bg-gray-800 text-white':'border-gray-200 bg-white'} focus:border-accent`}>
+                  <option value="">{langue==='fr'?'— Choisir le fournisseur —':'— Choose supplier —'}</option>
+                  {fournisseurs.map(f=>(
+                    <option key={f.id} value={f.id}>{f.nom}{f.prenom?` ${f.prenom}`:''}{f.ville?` (${f.ville})`:''}{f.numero?` · #${f.numero}`:''}</option>
+                  ))}
+                </select>
+              </div>
 
               {/* Source : Caisse ou Dépôt */}
               <div className={`flex items-center justify-between p-3.5 rounded-xl border-2 transition-all ${useCaisse ? 'border-accent bg-accent/5' : dark ? 'bg-gray-800 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
@@ -1882,6 +2021,12 @@ const FinalisationModal = ({ transaction, profitShare, onClose, onFinalize, t, d
 const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dark, langue }) => {
   const isPorteur = true; // EditModal n'est accessible qu'au porteur
 
+  // ── Date de l'opération (modifiable) ──
+  const getDateStr = (tx) => {
+    try { return new Date(tx.date).toISOString().split('T')[0]; } catch { return new Date().toISOString().split('T')[0]; }
+  };
+  const [dateOperation, setDateOperation] = useState(getDateStr(transaction));
+
   // ── État VENTE ──
   const [deviseVente, setDeviseVente] = useState(transaction.deviseVente || 'RMB');
   const [tauxConv, setTauxConv] = useState(transaction.tauxConversion?.toString() || '');
@@ -1903,13 +2048,14 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
 
   React.useEffect(() => {
     const handler = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'H') {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
         e.preventDefault();
+        e.stopPropagation();
         setHiddenUnlocked(prev => !prev);
       }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, []);
 
   const handleHiddenTap = () => {
@@ -1979,7 +2125,7 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const changes = { dateModification: new Date() };
+    const changes = { dateModification: new Date(), date: dateOperation };
 
     if (transaction.type === 'vente') {
       const newQteDevise = qte;
@@ -2071,6 +2217,22 @@ const EditModal = ({ transaction, data, allTransactions, onClose, onEdit, t, dar
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+
+          {/* ── DATE DE L'OPÉRATION ─────────────────────────────── */}
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:10,
+            background: dark ? 'rgba(255,200,50,0.08)' : 'rgba(255,160,0,0.07)',
+            border: `1px solid ${dark ? 'rgba(255,200,50,0.25)' : 'rgba(255,160,0,0.3)'}` }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={dark?'#fbbf24':'#d97706'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+            <label style={{ fontSize:12, fontWeight:600, color: dark?'#fbbf24':'#d97706', flex:1 }}>
+              {langue==='fr' ? "Date de l'opération" : "Operation date"}
+            </label>
+            <input type="date" value={dateOperation}
+              onChange={e => setDateOperation(e.target.value)}
+              style={{ fontSize:13, fontWeight:600, border:'none', background:'transparent',
+                color: dark?'#fbbf24':'#d97706', outline:'none', cursor:'pointer' }} />
+          </div>
 
           {/* ══ VENTE ══ */}
           {transaction.type === 'vente' && (
@@ -3119,83 +3281,235 @@ const DeviseCard = ({ devise: d, onCmupEdit, t, dark, langue }) => {
 // v5.6.0+ PAGE COMPONENTS — reçoivent tk, dark, langue en props
 // ─────────────────────────────────────────────────────────────
 
-const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDeleteClient, apiGetClientExtrait }) => {
+// ── Composant indicatif téléphonique ──────────────────────────
+const COUNTRY_CODES = [
+  {code:'+237',flag:'🇨🇲',name:'Cameroun'},{code:'+242',flag:'🇨🇬',name:'Congo'},{code:'+243',flag:'🇨🇩',name:'RDC'},
+  {code:'+241',flag:'🇬🇦',name:'Gabon'},{code:'+236',flag:'🇨🇫',name:'Centrafrique'},{code:'+240',flag:'🇬🇶',name:'Guinée Éq.'},
+  {code:'+235',flag:'🇹🇩',name:'Tchad'},{code:'+221',flag:'🇸🇳',name:'Sénégal'},{code:'+225',flag:'🇨🇮',name:'Côte d\'Ivoire'},
+  {code:'+223',flag:'🇲🇱',name:'Mali'},{code:'+226',flag:'🇧🇫',name:'Burkina'},{code:'+229',flag:'🇧🇯',name:'Bénin'},
+  {code:'+228',flag:'🇹🇬',name:'Togo'},{code:'+227',flag:'🇳🇪',name:'Niger'},{code:'+234',flag:'🇳🇬',name:'Nigeria'},
+  {code:'+233',flag:'🇬🇭',name:'Ghana'},{code:'+212',flag:'🇲🇦',name:'Maroc'},{code:'+213',flag:'🇩🇿',name:'Algérie'},
+  {code:'+216',flag:'🇹🇳',name:'Tunisie'},{code:'+20',flag:'🇪🇬',name:'Égypte'},
+  {code:'+33',flag:'🇫🇷',name:'France'},{code:'+32',flag:'🇧🇪',name:'Belgique'},{code:'+41',flag:'🇨🇭',name:'Suisse'},
+  {code:'+1',flag:'🇺🇸',name:'USA/Canada'},{code:'+44',flag:'🇬🇧',name:'UK'},
+  {code:'+86',flag:'🇨🇳',name:'Chine'},{code:'+971',flag:'🇦🇪',name:'Émirats'},
+];
+
+const PhoneInput = ({ value, onChange, inputStyle, tk, dark }) => {
+  const [indicatif, setIndicatif] = React.useState('+237');
+  const [local, setLocal] = React.useState('');
+  const [showList, setShowList] = React.useState(false);
+
+  React.useEffect(() => {
+    // Parse existing value
+    if (value) {
+      const found = COUNTRY_CODES.find(c => value.startsWith(c.code));
+      if (found) { setIndicatif(found.code); setLocal(value.slice(found.code.length).trim()); }
+      else setLocal(value);
+    }
+  }, []);
+
+  const update = (ind, loc) => {
+    // Pas d'espace : +237XXXXXXXXX (valide directement côté backend)
+    const full = loc ? `${ind}${loc}` : '';
+    onChange(full);
+  };
+
+  const sel = COUNTRY_CODES.find(c => c.code === indicatif) || COUNTRY_CODES[0];
+
+  return (
+    <div style={{ display:'flex', gap:6, position:'relative' }}>
+      <button type="button" onClick={()=>setShowList(v=>!v)} style={{
+        padding:'8px 10px', borderRadius:8, border:`1px solid ${tk.border}`, background:tk.cardB,
+        color:tk.ink, fontSize:12, cursor:'pointer', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:4, flexShrink:0,
+      }}>
+        <span>{sel.flag}</span><span style={{fontSize:11}}>{sel.code}</span><span style={{fontSize:9,color:tk.faint}}>▾</span>
+      </button>
+      {showList && (
+        <div style={{
+          position:'absolute', top:'100%', left:0, zIndex:200,
+          background:tk.card, border:`1px solid ${tk.border}`, borderRadius:10,
+          boxShadow:'0 8px 24px rgba(0,0,0,0.18)', maxHeight:220, overflowY:'auto', minWidth:200,
+        }}>
+          {COUNTRY_CODES.map(c => (
+            <div key={c.code} onClick={()=>{ setIndicatif(c.code); setShowList(false); update(c.code, local); }}
+              style={{ padding:'7px 12px', cursor:'pointer', fontSize:12, color:tk.ink, display:'flex', alignItems:'center', gap:8,
+                background: c.code===indicatif ? (dark?'rgba(212,175,55,0.1)':'rgba(212,175,55,0.07)') : 'transparent',
+                fontWeight: c.code===indicatif ? 700 : 400,
+              }}>
+              <span>{c.flag}</span><span style={{fontSize:11,color:tk.faint,minWidth:36}}>{c.code}</span><span>{c.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <input style={{...inputStyle, flex:1}} value={local} inputMode="numeric"
+        onChange={e=>{ const v=e.target.value.replace(/[^0-9]/g,'').slice(0,9); setLocal(v); update(indicatif,v); }}
+        placeholder="6XXXXXXXX (9 chiffres)" maxLength={9} onClick={()=>setShowList(false)}/>
+    </div>
+  );
+};
+
+// Compteur de chiffres affiché sous le champ téléphone
+const PhoneCounter = ({ value }) => {
+  const digits = (value || '').replace(/\D/g,'').replace(/^237/,'');
+  if (!value || digits.length === 0) return null;
+  const ok = digits.length === 9;
+  return <div style={{ fontSize:10, marginTop:3, color: ok ? '#22C55E' : '#EF4444', fontWeight:600 }}>
+    {digits.length}/9 chiffres{ok ? ' ✓' : ''}
+  </div>;
+};
+
+// ─────────────────────────────────────────────────────────────
+
+const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDeleteClient, onUpdateClient, apiGetClientExtrait, apiPayClient }) => {
   const [showForm, setShowForm] = useState(false);
-  const [nom, setNom] = useState(''); const [numero, setNumero] = useState(''); const [adresse, setAdresse] = useState('');
   const [loading, setLoading] = useState(false);
   const [extraitData, setExtraitData] = useState(null);
   const [extraitClient, setExtraitClient] = useState(null);
+  const [editClient, setEditClient] = useState(null);
+  const [paymentTx, setPaymentTx] = useState(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMode, setPaymentMode] = useState('XAF');
+
+  // Form fields
+  const emptyForm = { nom:'', prenom:'', telephone:'', adresse:'', ville:'' };
+  const [form, setForm] = useState(emptyForm);
+  const [editForm, setEditForm] = useState(emptyForm);
+
+  const card = { background:tk.card, borderRadius:14, border:`1px solid ${tk.border}`, padding:'18px 20px', boxShadow:dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
+  const inputStyle = { width:'100%', padding:'9px 12px', borderRadius:8, border:`1px solid ${tk.border}`, background:tk.cardB, color:tk.ink, fontSize:12, outline:'none', boxSizing:'border-box' };
+  const label = (txt) => <div style={{fontSize:10,color:tk.sub,marginBottom:4,fontWeight:600}}>{txt}</div>;
 
   const handleCreate = async () => {
-    if (!nom || !numero) { toast.error('Nom et numéro requis'); return; }
+    if (!form.nom.trim()) { toast.error('Nom requis'); return; }
     setLoading(true);
-    try { await onCreateClient(nom, numero, adresse); toast.success('Client créé'); setNom(''); setNumero(''); setAdresse(''); setShowForm(false); }
-    catch (e) { toast.error(e.message); }
+    try {
+      await onCreateClient(form.nom.trim(), form.prenom.trim(), form.telephone.trim(), [form.adresse,form.ville].filter(Boolean).join(', '));
+      toast.success('Client créé ✓'); setForm(emptyForm); setShowForm(false);
+    } catch(e) { toast.error(e.message); }
     finally { setLoading(false); }
   };
   const handleDelete = async (id) => {
     if (!window.confirm('Supprimer ce client ?')) return;
-    try { await onDeleteClient(id); toast.success('Supprimé'); }
-    catch (e) { toast.error(e.message); }
+    try { await onDeleteClient(id); toast.success('Supprimé'); } catch(e) { toast.error(e.message); }
   };
   const handleExtrait = async (client) => {
     try {
-      const data = await apiGetClientExtrait(client.id);
-      setExtraitData(data);
-      setExtraitClient(client);
-    } catch (e) { toast.error('Extrait non disponible'); }
+      const d = await apiGetClientExtrait(client.id);
+      setExtraitData(d); setExtraitClient(client);
+    } catch(e) { toast.error('Extrait indisponible : ' + e.message); }
+  };
+  const handlePayment = async () => {
+    if (!paymentTx || !paymentAmount) { toast.error('Montant requis'); return; }
+    try {
+      setLoading(true);
+      await apiPayClient(extraitClient.id, paymentTx.id, parseFloat(paymentAmount), paymentMode);
+      toast.success('Paiement enregistré ✓');
+      setPaymentTx(null);
+      setPaymentAmount('');
+      // Recharger l'extrait
+      const d = await apiGetClientExtrait(extraitClient.id);
+      setExtraitData(d);
+    } catch(e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  const openEdit = (c) => {
+    setEditClient(c);
+    const parts = (c.adresse||'').split(',');
+    setEditForm({ nom:c.nom||'', prenom:c.prenom||'', telephone:c.telephone||c.numero||'', adresse:parts[0]?.trim()||'', ville:parts[1]?.trim()||c.ville||'' });
+  };
+  const handleUpdate = async () => {
+    if (!editForm.nom.trim()) { toast.error('Nom requis'); return; }
+    try {
+      await onUpdateClient(editClient.id, editForm.nom.trim(), editForm.prenom.trim(), editForm.telephone.trim(), [editForm.adresse,editForm.ville].filter(Boolean).join(', '));
+      toast.success('Client modifié ✓'); setEditClient(null);
+    } catch(e) { toast.error(e.message); }
   };
 
-  const card = { background: tk.card, borderRadius: 14, border: `1px solid ${tk.border}`, padding: '18px 20px', boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
-  const inputStyle = { width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${tk.border}`, background: tk.cardB, color: tk.ink, fontSize: 12, outline: 'none' };
+  const fmtNum = (id) => `CLT-${String(id).padStart(4,'0')}`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: tk.ink, display: 'flex', alignItems: 'center', gap: 8 }}>
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      {/* Header */}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2 style={{margin:0,fontSize:16,fontWeight:800,color:tk.ink,display:'flex',alignItems:'center',gap:8}}>
           <Users size={18} color={tk.accent}/> {langue==='fr'?'Gestion des Clients':'Client Management'}
+          <span style={{fontSize:11,fontWeight:500,color:tk.faint}}>({clients.length})</span>
         </h2>
-        <button onClick={() => setShowForm(v=>!v)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: tk.accent, color: '#0A1628', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
-          <Plus size={14}/> {langue==='fr'?'Nouveau client':'New client'}
+        <button onClick={()=>setShowForm(v=>!v)} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontSize:11,fontWeight:700}}>
+          <Plus size={14}/> Nouveau client
         </button>
       </div>
 
+      {/* Formulaire création */}
       {showForm && (
-        <div style={{ ...card, borderColor: '#D4AF3740' }}>
-          <h4 style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 700, color: tk.ink }}>{langue==='fr'?'Créer un client':'Create client'}</h4>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
-            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Nom *</div><input style={inputStyle} value={nom} onChange={e=>setNom(e.target.value)} placeholder="Nom du client"/></div>
-            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Numéro *</div><input style={inputStyle} value={numero} onChange={e=>setNumero(e.target.value)} placeholder="N° de compte"/></div>
+        <div style={{...card,borderColor:'#D4AF3740'}}>
+          <h4 style={{margin:'0 0 14px',fontSize:12,fontWeight:700,color:tk.ink}}>
+            Créer un client
+            <span style={{fontSize:10,fontWeight:400,color:tk.faint,marginLeft:8}}>— Code généré automatiquement (CLT-001, CLT-002…)</span>
+          </h4>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+            <div>{label('Nom *')}<input style={inputStyle} value={form.nom} onChange={e=>setForm(f=>({...f,nom:e.target.value.replace(/[^a-zA-ZÀ-ÿ0-9\s\-'.]/g,'')}))} placeholder="Nom"/></div>
+            <div>{label('Prénom')}<input style={inputStyle} value={form.prenom} onChange={e=>setForm(f=>({...f,prenom:e.target.value.replace(/[^a-zA-ZÀ-ÿ0-9\s\-'.]/g,'')}))} placeholder="Prénom"/></div>
+            <div style={{gridColumn:'1/-1'}}>{label('Téléphone')}<PhoneInput value={form.telephone} onChange={v=>setForm(f=>({...f,telephone:v}))} inputStyle={inputStyle} tk={tk} dark={dark}/><PhoneCounter value={form.telephone}/></div>
+            <div>{label('Adresse / Quartier')}<input style={inputStyle} value={form.adresse} onChange={e=>setForm(f=>({...f,adresse:e.target.value}))} placeholder="Rue, quartier"/></div>
+            <div>{label('Ville')}<input style={inputStyle} value={form.ville} onChange={e=>setForm(f=>({...f,ville:e.target.value.replace(/[^a-zA-ZÀ-ÿ\s-'.]/g,'')}))} placeholder="Douala, Yaoundé…"/></div>
           </div>
-          <div style={{ marginBottom: 12 }}><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>{langue==='fr'?'Adresse':'Address'}</div><input style={inputStyle} value={adresse} onChange={e=>setAdresse(e.target.value)} placeholder="Adresse (optionnel)"/></div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={handleCreate} disabled={loading} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#22C55E', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>{loading?'…':'Créer'}</button>
-            <button onClick={() => setShowForm(false)} style={{ padding: '8px 16px', borderRadius: 8, border: `1px solid ${tk.border}`, background: 'none', color: tk.sub, cursor: 'pointer', fontSize: 11 }}>Annuler</button>
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={handleCreate} disabled={loading} style={{padding:'8px 16px',borderRadius:8,border:'none',background:'#22C55E',color:'#fff',cursor:'pointer',fontSize:11,fontWeight:700}}>{loading?'…':'Créer'}</button>
+            <button onClick={()=>setShowForm(false)} style={{padding:'8px 16px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:11}}>Annuler</button>
           </div>
         </div>
       )}
 
+      {/* Tableau */}
       <div style={card}>
         {clients.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '32px 0', color: tk.faint, fontSize: 13 }}>{langue==='fr'?'Aucun client enregistré':'No clients yet'}</div>
+          <div style={{textAlign:'center',padding:'32px 0',color:tk.faint,fontSize:13}}>Aucun client enregistré</div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ borderBottom: `1px solid ${tk.border}` }}>
-                {['Nom','Numéro','Adresse','Tx',''].map((h,i)=>(
-                  <th key={i} style={{ padding: '8px 12px', textAlign: i>=3?'right':'left', color: tk.faint, fontSize: 10, fontWeight: 700, letterSpacing: 0.5 }}>{h.toUpperCase()}</th>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+              <thead><tr style={{borderBottom:`2px solid ${tk.border}`}}>
+                {['N°','Nom & Prénom','Téléphone','Adresse / Ville','Dette','Remboursé','Reste','Actions'].map((h,i)=>(
+                  <th key={i} style={{padding:'8px 12px',textAlign:i>=4?'right':'left',color:tk.faint,fontSize:10,fontWeight:700,letterSpacing:0.5}}>{h.toUpperCase()}</th>
                 ))}
               </tr></thead>
               <tbody>
-                {clients.map((c,i) => (
-                  <tr key={c.id} style={{ borderBottom: i<clients.length-1?`1px solid ${tk.border}`:'none' }}>
-                    <td style={{ padding: '10px 12px', fontWeight: 700, color: tk.ink }}>{c.nom}</td>
-                    <td style={{ padding: '10px 12px', color: tk.sub }}>{c.numero}</td>
-                    <td style={{ padding: '10px 12px', color: tk.faint, fontSize: 11 }}>{c.adresse||'—'}</td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: tk.sub }}>{c.nb_transactions||0}</td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                      <button onClick={()=>handleExtrait(c)} title="Extrait" style={{ background:'none', border:'none', cursor:'pointer', color: tk.blue, marginRight: 8 }}><FileText size={14}/></button>
-                      <button onClick={()=>handleDelete(c.id)} title="Supprimer" style={{ background:'none', border:'none', cursor:'pointer', color: '#EF4444' }}><Trash2 size={14}/></button>
+                {clients.map((c,i)=>(
+                  <tr key={c.id} style={{borderBottom:i<clients.length-1?`1px solid ${tk.border}`:'none'}}>
+                    <td style={{padding:'10px 12px',color:tk.faint,fontSize:10,fontWeight:600,whiteSpace:'nowrap'}}>{fmtNum(c.id)}</td>
+                    <td style={{padding:'10px 12px'}}>
+                      <div style={{fontWeight:700,color:tk.ink}}>{c.nom}{c.prenom?` ${c.prenom}`:''}</div>
+                      <div style={{fontSize:10,color:tk.faint}}>{c.nb_transactions||0} transaction{c.nb_transactions!==1?'s':''}</div>
+                    </td>
+                    <td style={{padding:'10px 12px',color:tk.sub,whiteSpace:'nowrap'}}>{c.telephone||c.numero||'—'}</td>
+                    <td style={{padding:'10px 12px',color:tk.faint,fontSize:11}}>{c.adresse||c.ville||'—'}</td>
+                    {/** Dette / Remboursement / Reste columns */}
+                    {(() => {
+                      const sol = parseFloat(c.solde||0);
+                      const dette = Math.max(0, -sol);
+                      const remb = Math.max(0, sol);
+                      const reste = Math.max(0, dette - remb);
+                      return (
+                        <>
+                          <td style={{padding:'10px 12px',textAlign:'right'}}>
+                            {dette>0? (<span style={{fontWeight:700,color:'#EF4444'}}>{Math.round(dette).toLocaleString('fr-FR')} XAF</span>) : <span style={{color:tk.faint}}>—</span>}
+                          </td>
+                          <td style={{padding:'10px 12px',textAlign:'right'}}>
+                            {remb>0? (<span style={{fontWeight:700,color:'#22C55E'}}>{Math.round(remb).toLocaleString('fr-FR')} XAF</span>) : <span style={{color:tk.faint}}>—</span>}
+                          </td>
+                          <td style={{padding:'10px 12px',textAlign:'right'}}>
+                            {reste>0? (<span style={{fontWeight:700,color:'#F59E0B'}}>{Math.round(reste).toLocaleString('fr-FR')} XAF</span>) : <span style={{color:tk.faint}}>—</span>}
+                          </td>
+                        </>
+                      );
+                    })()}
+                    <td style={{padding:'10px 12px',textAlign:'right'}}>
+                      <div style={{display:'flex',gap:6,justifyContent:'flex-end'}}>
+                        <button onClick={()=>handleExtrait(c)} title="Extrait de compte" style={{background:'none',border:'none',cursor:'pointer',color:tk.accent}}><FileText size={14}/></button>
+                        <button onClick={()=>openEdit(c)} title="Modifier" style={{background:'none',border:'none',cursor:'pointer',color:'#F59E0B'}}><Edit2 size={14}/></button>
+                        <button onClick={()=>handleDelete(c.id)} title="Supprimer" style={{background:'none',border:'none',cursor:'pointer',color:'#EF4444'}}><Trash2 size={14}/></button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -3205,22 +3519,130 @@ const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDelete
         )}
       </div>
 
-      {/* Modal extrait client */}
-      {extraitData && extraitClient && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
-          <div style={{ background: tk.card, borderRadius: 16, padding: 24, width: '90%', maxWidth: 600, maxHeight: '80vh', overflow: 'auto', border: `1px solid ${tk.border}` }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-              <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:tk.ink }}>Extrait — {extraitClient.nom}</h3>
-              <button onClick={()=>setExtraitData(null)} style={{ background:'none', border:'none', cursor:'pointer', color:tk.faint }}><X size={16}/></button>
+      {/* Modal Modifier */}
+      {editClient && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:420,maxHeight:'90vh',overflow:'auto',border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+              <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Modifier — {fmtNum(editClient.id)}</h3>
+              <button onClick={()=>setEditClient(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
             </div>
-            <div style={{ fontSize: 11, color: tk.sub, marginBottom: 12 }}>{(extraitData.transactions||[]).length} transaction(s)</div>
-            {(extraitData.transactions||[]).map((tx,i) => (
-              <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${tk.border}`, fontSize:11 }}>
-                <span style={{color:tk.sub}}>{tx.date ? new Date(tx.date).toLocaleDateString('fr-FR') : '—'}</span>
-                <span style={{color:tk.ink, fontWeight:600}}>{tx.type}</span>
-                <span style={{color:tk.accent, fontWeight:700}}>{Math.round(parseFloat(tx.montant||0)).toLocaleString('fr-FR')} XAF</span>
+            <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                <div>{label('Nom *')}<input style={inputStyle} value={editForm.nom} onChange={e=>setEditForm(f=>({...f,nom:e.target.value.replace(/[^a-zA-ZÀ-ÿ0-9\s\-'.]/g,'')}))} placeholder="Nom"/></div>
+                <div>{label('Prénom')}<input style={inputStyle} value={editForm.prenom} onChange={e=>setEditForm(f=>({...f,prenom:e.target.value.replace(/[^a-zA-ZÀ-ÿ0-9\s\-'.]/g,'')}))} placeholder="Prénom"/></div>
               </div>
-            ))}
+              <div>{label('Téléphone')}<PhoneInput value={editForm.telephone} onChange={v=>setEditForm(f=>({...f,telephone:v}))} inputStyle={inputStyle} tk={tk} dark={dark}/><PhoneCounter value={editForm.telephone}/></div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                <div>{label('Adresse / Quartier')}<input style={inputStyle} value={editForm.adresse} onChange={e=>setEditForm(f=>({...f,adresse:e.target.value}))} placeholder="Quartier"/></div>
+                <div>{label('Ville')}<input style={inputStyle} value={editForm.ville} onChange={e=>setEditForm(f=>({...f,ville:e.target.value.replace(/[^a-zA-ZÀ-ÿ\s-'.]/g,'')}))} placeholder="Ville"/></div>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8,marginTop:16}}>
+              <button onClick={handleUpdate} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontWeight:700,fontSize:12}}>Enregistrer</button>
+              <button onClick={()=>setEditClient(null)} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:12}}>Annuler</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Extrait */}
+      {extraitData && extraitClient && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:'92%',maxWidth:620,maxHeight:'85vh',overflow:'auto',border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+              <div>
+                <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>{extraitClient.nom}{extraitClient.prenom?` ${extraitClient.prenom}`:''}</h3>
+                <div style={{fontSize:11,color:tk.faint}}>{fmtNum(extraitClient.id)} · Extrait de compte</div>
+              </div>
+              <button onClick={()=>setExtraitData(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+            </div>
+            {/* Récap */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
+              <div style={{background:dark?'rgba(34,197,94,0.1)':'rgba(34,197,94,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(34,197,94,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>TOTAL VENTES</div>
+                <div style={{fontSize:15,fontWeight:800,color:'#22C55E'}}>{Math.round(extraitData.total_ventes||0).toLocaleString('fr-FR')} XAF</div>
+              </div>
+              <div style={{background:dark?'rgba(212,175,55,0.1)':'rgba(212,175,55,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(212,175,55,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>SOLDE COMPTE</div>
+                <div style={{fontSize:15,fontWeight:800,color:'#D4AF37'}}>{Math.round(extraitData.solde||extraitClient.solde||0).toLocaleString('fr-FR')} XAF</div>
+              </div>
+            </div>
+            <div style={{fontSize:11,color:tk.sub,marginBottom:10}}>{(extraitData.transactions||[]).length} transaction(s) · Restant: <span style={{fontWeight:700,color:'#F59E0B'}}>{Math.round(extraitData.totals?.total_montant_reste||0).toLocaleString('fr-FR')} XAF</span></div>
+            {(extraitData.transactions||[]).length===0?(
+              <div style={{textAlign:'center',padding:'20px 0',color:tk.faint,fontSize:12}}>Aucune transaction</div>
+            ):(extraitData.transactions||[]).map((tx,i)=>{
+              const montantTotal = parseFloat(tx.montant||0);
+              const montantPaye = parseFloat(tx.montant_paye||0);
+              const montantReste = parseFloat(tx.montant_reste||montantTotal - montantPaye);
+              return (
+                <div key={i} style={{display:'grid',gridTemplateColumns:'90px 1fr 80px 80px 60px',alignItems:'center',gap:8,padding:'8px 0',borderBottom:`1px solid ${tk.border}`,fontSize:11}}>
+                  <span style={{color:tk.faint}}>{tx.date?new Date(tx.date).toLocaleDateString('fr-FR'):'—'}</span>
+                  <div>
+                    <span style={{color:tk.ink,fontWeight:600,textTransform:'capitalize'}}>{tx.type}</span>
+                    <div style={{fontSize:9,color:tk.faint}}>{tx.payment_status||'—'}</div>
+                  </div>
+                  <span style={{fontWeight:700,color:tk.accent,textAlign:'right'}}>{Math.round(montantTotal).toLocaleString('fr-FR')}</span>
+                  <span style={{fontWeight:600,color:'#22C55E',textAlign:'right'}}>{Math.round(montantPaye).toLocaleString('fr-FR')}</span>
+                  <div style={{display:'flex',gap:4,justifyContent:'flex-end'}}>
+                    {montantReste > 0 && (
+                      <>
+                        <span style={{fontWeight:600,color:'#F59E0B',textAlign:'right'}}>{Math.round(montantReste).toLocaleString('fr-FR')}</span>
+                        <button onClick={()=>{setPaymentTx(tx);setPaymentAmount('');setPaymentMode('XAF');}} title="Payer" style={{background:'none',border:'none',cursor:'pointer',color:tk.accent,fontSize:11,fontWeight:600}}>Payer</button>
+                      </>
+                    )}
+                    {montantReste <= 0 && <span style={{color:'#22C55E',fontSize:9}}>✓</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Paiement Client */}
+      {paymentTx && extraitClient && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:380,border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+              <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Enregistrer un paiement</h3>
+              <button onClick={()=>setPaymentTx(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+            </div>
+            <div style={{marginBottom:14,fontSize:12,color:tk.sub}}>
+              <div>Client: <span style={{fontWeight:700,color:tk.ink}}>{extraitClient.nom}</span></div>
+              <div>Transaction: <span style={{fontWeight:700,color:tk.accent}}>{paymentTx.type}</span> — {new Date(paymentTx.date).toLocaleDateString('fr-FR')}</div>
+              <div style={{marginTop:8}}>
+                <span style={{color:tk.faint}}>Montant:</span> <span style={{fontWeight:700,fontSize:13,color:tk.accent}}>{Math.round(parseFloat(paymentTx.montant||0)).toLocaleString('fr-FR')} XAF</span>
+              </div>
+              <div>
+                <span style={{color:tk.faint}}>Reste à payer:</span> <span style={{fontWeight:700,fontSize:13,color:'#F59E0B'}}>{Math.round(parseFloat(paymentTx.montant_reste||0)).toLocaleString('fr-FR')} XAF</span>
+              </div>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MONTANT À PAYER *</div>
+              <input 
+                type="number" 
+                value={paymentAmount} 
+                onChange={e=>setPaymentAmount(e.target.value)} 
+                placeholder="0"
+                style={{...inputStyle,fontSize:14,fontWeight:600}}
+              />
+            </div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MODE DE PAIEMENT</div>
+              <select 
+                value={paymentMode} 
+                onChange={e=>setPaymentMode(e.target.value)}
+                style={{...inputStyle}}
+              >
+                <option value="XAF">XAF (Espèces)</option>
+                <option value="USDT">USDT (Crypto)</option>
+              </select>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={handlePayment} disabled={loading || !paymentAmount} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontWeight:700,fontSize:12,opacity:loading||!paymentAmount?0.6:1}}>{loading?'…':'Enregistrer'}</button>
+              <button onClick={()=>setPaymentTx(null)} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:12}}>Annuler</button>
+            </div>
           </div>
         </div>
       )}
@@ -3228,118 +3650,398 @@ const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDelete
   );
 };
 
-const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, onCreateFournisseur, onDeleteFournisseur, onPaymentFournisseur }) => {
+// ─────────────────────────────────────────────────────────────
+
+const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, cmup=0, onCreateFournisseur, onDeleteFournisseur, onUpdateFournisseur, onPaymentFournisseur, apiGetFournisseurExtrait, apiPayFournisseur }) => {
   const [showForm, setShowForm] = useState(false);
   const [showPay, setShowPay] = useState(null);
-  const [nom, setNom] = useState(''); const [numero, setNumero] = useState(''); const [adresse, setAdresse] = useState('');
-  const [payMode, setPayMode] = useState('xaf'); const [payMontant, setPayMontant] = useState('');
+  const [editFourn, setEditFourn] = useState(null);
+  const [showUsdtEq, setShowUsdtEq] = useState({}); // toggle USDT equivalent per fournisseur
   const [loading, setLoading] = useState(false);
+  const [extraitData, setExtraitData] = useState(null);
+  const [extraitFournisseur, setExtraitFournisseur] = useState(null);
+  const [paymentTx, setPaymentTx] = useState(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMode, setPaymentMode] = useState('XAF');
 
-  const card = { background: tk.card, borderRadius: 14, border: `1px solid ${tk.border}`, padding: '18px 20px', boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
-  const inputStyle = { width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${tk.border}`, background: tk.cardB, color: tk.ink, fontSize: 12, outline: 'none' };
+  const emptyForm = { nom:'', prenom:'', telephone:'', adresse:'', ville:'' };
+  const [form, setForm] = useState(emptyForm);
+  const [editForm, setEditForm] = useState(emptyForm);
+  const [payMode, setPayMode] = useState('xaf'); const [payMontant, setPayMontant] = useState('');
+
+  const card = { background:tk.card, borderRadius:14, border:`1px solid ${tk.border}`, padding:'18px 20px', boxShadow:dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
+  const inputStyle = { width:'100%', padding:'9px 12px', borderRadius:8, border:`1px solid ${tk.border}`, background:tk.cardB, color:tk.ink, fontSize:12, outline:'none', boxSizing:'border-box' };
+  const label = (txt) => <div style={{fontSize:10,color:tk.sub,marginBottom:4,fontWeight:600}}>{txt}</div>;
 
   const handleCreate = async () => {
-    if (!nom || !numero) { toast.error('Nom et numéro requis'); return; }
+    if (!form.nom.trim()) { toast.error('Nom requis'); return; }
     setLoading(true);
-    try { await onCreateFournisseur(nom, numero, adresse); toast.success('Fournisseur créé'); setNom(''); setNumero(''); setAdresse(''); setShowForm(false); }
-    catch (e) { toast.error(e.message); }
+    try {
+      await onCreateFournisseur(form.nom.trim(), form.prenom.trim(), form.telephone.trim(), [form.adresse,form.ville].filter(Boolean).join(', '));
+      toast.success('Fournisseur créé ✓'); setForm(emptyForm); setShowForm(false);
+    } catch(e) { toast.error(e.message); }
     finally { setLoading(false); }
   };
   const handleDelete = async (id) => {
     if (!window.confirm('Supprimer ce fournisseur ?')) return;
-    try { await onDeleteFournisseur(id); toast.success('Supprimé'); }
-    catch (e) { toast.error(e.message); }
+    try { await onDeleteFournisseur(id); toast.success('Supprimé'); } catch(e) { toast.error(e.message); }
   };
   const handlePay = async () => {
     if (!payMontant) { toast.error('Montant requis'); return; }
-    try { await onPaymentFournisseur(showPay, payMode, parseFloat(payMontant)); toast.success(`Paiement ${payMode.toUpperCase()} enregistré`); setShowPay(null); setPayMontant(''); }
-    catch (e) { toast.error(e.message); }
+    try { await onPaymentFournisseur(showPay, payMode, parseFloat(payMontant)); toast.success(`Paiement ${payMode.toUpperCase()} enregistré ✓`); setShowPay(null); setPayMontant(''); }
+    catch(e) { toast.error(e.message); }
+  };
+  const openEdit = (f) => {
+    setEditFourn(f);
+    const parts = (f.adresse||'').split(',');
+    setEditForm({ nom:f.nom||'', prenom:f.prenom||'', telephone:f.telephone||f.numero||'', adresse:parts[0]?.trim()||'', ville:parts[1]?.trim()||f.ville||'' });
+  };
+  const handleExtrait = async (f) => {
+    try {
+      const d = await apiGetFournisseurExtrait(f.id);
+      setExtraitData(d);
+      setExtraitFournisseur(f);
+    } catch(e) { toast.error('Extrait indisponible: '+e.message); }
+  };
+  const handlePaymentFournisseur = async () => {
+    if (!paymentTx || !paymentAmount) { toast.error('Montant requis'); return; }
+    try {
+      setLoading(true);
+      await apiPayFournisseur(extraitFournisseur.id, paymentTx.id, parseFloat(paymentAmount), paymentMode);
+      toast.success('Paiement enregistré ✓');
+      setPaymentTx(null);
+      setPaymentAmount('');
+      // Recharger l'extrait
+      const d = await apiGetFournisseurExtrait(extraitFournisseur.id);
+      setExtraitData(d);
+    } catch(e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  const handleUpdate = async () => {
+    if (!editForm.nom.trim()) { toast.error('Nom requis'); return; }
+    try {
+      await onUpdateFournisseur(editFourn.id, editForm.nom.trim(), editForm.prenom.trim(), editForm.telephone.trim(), [editForm.adresse,editForm.ville].filter(Boolean).join(', '));
+      toast.success('Fournisseur modifié ✓'); setEditFourn(null);
+    } catch(e) { toast.error(e.message); }
+  };
+
+  const fmtNum = (id) => `FRN-${String(id).padStart(4,'0')}`;
+
+  // Trouver CMUP USDT pour convertir XAF → USDT
+  const getUsdtEquiv = (xafAmount, cmup) => cmup > 0 ? (xafAmount / cmup).toFixed(4) : '—';
+
+  const DebtCell = ({ xaf, usdt, label: lbl, color, cmup, showUsdt }) => {
+    const hasXaf = Math.abs(xaf||0) > 0.01;
+    const hasUsdt = Math.abs(usdt||0) > 0.0001;
+    if (!hasXaf && !hasUsdt) return <span style={{color:tk.faint,fontSize:10}}>—</span>;
+    return (
+      <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:2}}>
+        {hasXaf && <span style={{fontWeight:700,color,fontSize:11}}>{Math.round(xaf).toLocaleString('fr-FR')} XAF</span>}
+        {showUsdt && hasXaf && cmup > 0 && <span style={{fontSize:9,color:tk.faint}}>≈ {getUsdtEquiv(xaf,cmup)} USDT</span>}
+        {hasUsdt && <span style={{fontWeight:700,color,fontSize:11}}>{parseFloat(usdt).toFixed(4)} USDT</span>}
+      </div>
+    );
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: tk.ink, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Store size={18} color={tk.accent}/> {langue==='fr'?'Gestion des Fournisseurs':'Supplier Management'}
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      {/* Header */}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2 style={{margin:0,fontSize:16,fontWeight:800,color:tk.ink,display:'flex',alignItems:'center',gap:8}}>
+          <Store size={18} color={tk.accent}/> Gestion des Fournisseurs
+          <span style={{fontSize:11,fontWeight:500,color:tk.faint}}>({fournisseurs.length})</span>
         </h2>
-        <button onClick={() => setShowForm(v=>!v)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: tk.accent, color: '#0A1628', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
-          <Plus size={14}/> {langue==='fr'?'Nouveau fournisseur':'New supplier'}
+        <button onClick={()=>setShowForm(v=>!v)} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontSize:11,fontWeight:700}}>
+          <Plus size={14}/> Nouveau fournisseur
         </button>
       </div>
 
+      {/* Formulaire création */}
       {showForm && (
-        <div style={{ ...card, borderColor: '#D4AF3740' }}>
-          <h4 style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 700, color: tk.ink }}>Créer un fournisseur</h4>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
-            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Nom *</div><input style={inputStyle} value={nom} onChange={e=>setNom(e.target.value)} placeholder="Nom"/></div>
-            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Numéro *</div><input style={inputStyle} value={numero} onChange={e=>setNumero(e.target.value)} placeholder="N° compte"/></div>
+        <div style={{...card,borderColor:'#D4AF3740'}}>
+          <h4 style={{margin:'0 0 14px',fontSize:12,fontWeight:700,color:tk.ink}}>
+            Créer un fournisseur
+            <span style={{fontSize:10,fontWeight:400,color:tk.faint,marginLeft:8}}>— Code généré automatiquement (FRS-001, FRS-002…)</span>
+          </h4>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+            <div>{label('Nom *')}<input style={inputStyle} value={form.nom} onChange={e=>setForm(f=>({...f,nom:e.target.value.replace(/[^a-zA-ZÀ-ÿ0-9\s\-'.]/g,'')}))} placeholder="Nom"/></div>
+            <div>{label('Prénom')}<input style={inputStyle} value={form.prenom} onChange={e=>setForm(f=>({...f,prenom:e.target.value.replace(/[^a-zA-ZÀ-ÿ0-9\s\-'.]/g,'')}))} placeholder="Prénom"/></div>
+            <div style={{gridColumn:'1/-1'}}>{label('Téléphone')}<PhoneInput value={form.telephone} onChange={v=>setForm(f=>({...f,telephone:v}))} inputStyle={inputStyle} tk={tk} dark={dark}/><PhoneCounter value={form.telephone}/></div>
+            <div>{label('Adresse / Quartier')}<input style={inputStyle} value={form.adresse} onChange={e=>setForm(f=>({...f,adresse:e.target.value}))} placeholder="Rue, quartier"/></div>
+            <div>{label('Ville')}<input style={inputStyle} value={form.ville} onChange={e=>setForm(f=>({...f,ville:e.target.value.replace(/[^a-zA-ZÀ-ÿ\s-'.]/g,'')}))} placeholder="Douala, Yaoundé…"/></div>
           </div>
-          <div style={{ marginBottom: 12 }}><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Adresse</div><input style={inputStyle} value={adresse} onChange={e=>setAdresse(e.target.value)} placeholder="Adresse (optionnel)"/></div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={handleCreate} disabled={loading} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#22C55E', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>{loading?'…':'Créer'}</button>
-            <button onClick={() => setShowForm(false)} style={{ padding: '8px 16px', borderRadius: 8, border: `1px solid ${tk.border}`, background: 'none', color: tk.sub, cursor: 'pointer', fontSize: 11 }}>Annuler</button>
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={handleCreate} disabled={loading} style={{padding:'8px 16px',borderRadius:8,border:'none',background:'#22C55E',color:'#fff',cursor:'pointer',fontSize:11,fontWeight:700}}>{loading?'…':'Créer'}</button>
+            <button onClick={()=>setShowForm(false)} style={{padding:'8px 16px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:11}}>Annuler</button>
           </div>
         </div>
       )}
 
-      <div style={card}>
-        {fournisseurs.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '32px 0', color: tk.faint, fontSize: 13 }}>Aucun fournisseur enregistré</div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ borderBottom: `1px solid ${tk.border}` }}>
-                {['Nom','Numéro','Solde XAF','Solde USDT','Dette USDT',''].map((h,i)=>(
-                  <th key={i} style={{ padding: '8px 12px', textAlign: i>=2?'right':'left', color: tk.faint, fontSize: 10, fontWeight: 700, letterSpacing: 0.5 }}>{h.toUpperCase()}</th>
-                ))}
-              </tr></thead>
-              <tbody>
-                {fournisseurs.map((f,i) => (
-                  <tr key={f.id} style={{ borderBottom: i<fournisseurs.length-1?`1px solid ${tk.border}`:'none' }}>
-                    <td style={{ padding: '10px 12px', fontWeight: 700, color: tk.ink }}>{f.nom}</td>
-                    <td style={{ padding: '10px 12px', color: tk.sub }}>{f.numero}</td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: tk.ink }}>{Math.round(parseFloat(f.solde_xaf||0)).toLocaleString('fr-FR')}</td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: tk.accent }}>{parseFloat(f.solde_usdt||0).toFixed(4)}</td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: parseFloat(f.dette_usdt||0)>0?'#EF4444':tk.faint }}>
-                      {parseFloat(f.dette_usdt||0)>0 ? parseFloat(f.dette_usdt).toFixed(4) : '—'}
-                    </td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', display:'flex', gap:6, justifyContent:'flex-end' }}>
-                      <button onClick={()=>setShowPay(f.id)} style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${tk.accent}`, background:'none', color:tk.accent, cursor:'pointer', fontSize:10, fontWeight:700 }}>Payer</button>
-                      <button onClick={()=>handleDelete(f.id)} style={{ background:'none', border:'none', cursor:'pointer', color:'#EF4444' }}><Trash2 size={14}/></button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      {/* Cartes fournisseurs */}
+      <div style={{display:'flex',flexDirection:'column',gap:12}}>
+        {fournisseurs.length===0?(
+          <div style={{...card,textAlign:'center',padding:'32px 0',color:tk.faint,fontSize:13}}>Aucun fournisseur enregistré</div>
+        ):fournisseurs.map(f=>{
+          const detteXaf = parseFloat(f.solde_xaf||0) < 0 ? Math.abs(parseFloat(f.solde_xaf||0)) : 0; // XAF dû
+          const detteUsdt = parseFloat(f.dette_usdt||0);
+          const remboXaf = parseFloat(f.solde_xaf||0) > 0 ? parseFloat(f.solde_xaf||0) : 0;
+          const remboUsdt = parseFloat(f.solde_usdt||0) > 0 ? parseFloat(f.solde_usdt||0) : 0;
+          const resteXaf = detteXaf - remboXaf;
+          const resteUsdt = detteUsdt - remboUsdt;
+          const hasDette = detteXaf > 0 || detteUsdt > 0;
+          const showU = showUsdtEq[f.id];
+          return (
+            <div key={f.id} style={card}>
+              {/* Ligne info principale */}
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:hasDette?14:0}}>
+                <div style={{flex:1}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    <span style={{fontSize:10,fontWeight:700,color:tk.faint,background:dark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.05)',padding:'2px 7px',borderRadius:5}}>{fmtNum(f.id)}</span>
+                    <span style={{fontSize:14,fontWeight:800,color:tk.ink}}>{f.nom}{f.prenom?` ${f.prenom}`:''}</span>
+                  </div>
+                  <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+                    {(f.telephone||f.numero) && (
+                      <span style={{fontSize:11,color:tk.sub,display:'flex',alignItems:'center',gap:4}}>
+                        📞 {f.telephone||f.numero}
+                      </span>
+                    )}
+                    {(f.adresse||f.ville) && (
+                      <span style={{fontSize:11,color:tk.sub,display:'flex',alignItems:'center',gap:4}}>
+                        📍 {f.adresse||f.ville}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {/* Actions */}
+                  <div style={{display:'flex',gap:6,alignItems:'center',flexShrink:0}}>
+                    <button onClick={()=>setShowPay(f.id)} style={{padding:'5px 12px',borderRadius:6,border:`1px solid ${tk.accent}`,background:'none',color:tk.accent,cursor:'pointer',fontSize:10,fontWeight:700}}>Payer</button>
+                    <button onClick={()=>handleExtrait(f)} title="Extrait" style={{background:'none',border:'none',cursor:'pointer',color:tk.accent}}><FileText size={13}/></button>
+                    <button onClick={()=>openEdit(f)} style={{background:'none',border:'none',cursor:'pointer',color:'#F59E0B'}}><Edit2 size={13}/></button>
+                    <button onClick={()=>handleDelete(f.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#EF4444'}}><Trash2 size={13}/></button>
+                  </div>
+              </div>
+
+              {/* Tableau dette/remboursement/reste */}
+              {hasDette && (
+                <div>
+                  {/* Toggle équivalence USDT */}
+                  <div style={{display:'flex',justifyContent:'flex-end',marginBottom:6}}>
+                    <button onClick={()=>setShowUsdtEq(p=>({...p,[f.id]:!p[f.id]}))}
+                      style={{fontSize:9,padding:'2px 8px',borderRadius:5,border:`1px solid ${tk.border}`,background:'none',color:tk.faint,cursor:'pointer'}}>
+                      {showU?'Masquer':'Voir'} équiv. USDT
+                    </button>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                    {/* Dette */}
+                    <div style={{background:dark?'rgba(239,68,68,0.08)':'rgba(239,68,68,0.05)',borderRadius:10,padding:'10px 12px',border:'1px solid rgba(239,68,68,0.2)'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:tk.faint,marginBottom:6,letterSpacing:0.5}}>DETTE</div>
+                      <DebtCell xaf={detteXaf} usdt={detteUsdt} color='#EF4444' cmup={cmup} showUsdt={showU}/>
+                    </div>
+                    {/* Remboursé */}
+                    <div style={{background:dark?'rgba(34,197,94,0.08)':'rgba(34,197,94,0.05)',borderRadius:10,padding:'10px 12px',border:'1px solid rgba(34,197,94,0.2)'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:tk.faint,marginBottom:6,letterSpacing:0.5}}>REMBOURSÉ</div>
+                      <DebtCell xaf={remboXaf} usdt={remboUsdt} color='#22C55E' cmup={cmup} showUsdt={showU}/>
+                    </div>
+                    {/* Reste */}
+                    <div style={{background:dark?'rgba(245,158,11,0.08)':'rgba(245,158,11,0.05)',borderRadius:10,padding:'10px 12px',border:'1px solid rgba(245,158,11,0.2)'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:tk.faint,marginBottom:6,letterSpacing:0.5}}>RESTE DÛ</div>
+                      {resteXaf<=0&&resteUsdt<=0?(
+                        <span style={{fontSize:11,fontWeight:700,color:'#22C55E'}}>✓ Soldé</span>
+                      ):(
+                        <DebtCell xaf={Math.max(0,resteXaf)} usdt={Math.max(0,resteUsdt)} color='#F59E0B' cmup={cmup} showUsdt={showU}/>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      {/* Modal paiement fournisseur */}
-      {showPay && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999 }}>
-          <div style={{ background:tk.card, borderRadius:16, padding:24, width:360, border:`1px solid ${tk.border}` }}>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:16 }}>
-              <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:tk.ink }}>Paiement Fournisseur</h3>
-              <button onClick={()=>{setShowPay(null);setPayMontant('');}} style={{ background:'none', border:'none', cursor:'pointer', color:tk.faint }}><X size={16}/></button>
+      {/* Modal Modifier */}
+      {editFourn && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:420,maxHeight:'90vh',overflow:'auto',border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+              <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Modifier — {fmtNum(editFourn.id)}</h3>
+              <button onClick={()=>setEditFourn(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
             </div>
-            <div style={{ marginBottom:12 }}>
-              <div style={{ fontSize:10, color:tk.sub, marginBottom:6 }}>Mode de paiement</div>
-              <div style={{ display:'flex', gap:12 }}>
-                {['xaf','usdt'].map(m => (
-                  <label key={m} style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', fontSize:12, color:tk.ink }}>
-                    <input type="radio" checked={payMode===m} onChange={()=>setPayMode(m)} style={{accentColor:tk.accent}}/> {m.toUpperCase()} {m==='xaf'?'(Caisse)':'(USDT)'}
-                  </label>
-                ))}
+            <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                <div>{label('Nom *')}<input style={inputStyle} value={editForm.nom} onChange={e=>setEditForm(f=>({...f,nom:e.target.value.replace(/[^a-zA-ZÀ-ÿ0-9\s\-'.]/g,'')}))} placeholder="Nom"/></div>
+                <div>{label('Prénom')}<input style={inputStyle} value={editForm.prenom} onChange={e=>setEditForm(f=>({...f,prenom:e.target.value.replace(/[^a-zA-ZÀ-ÿ0-9\s\-'.]/g,'')}))} placeholder="Prénom"/></div>
+              </div>
+              <div>{label('Téléphone')}<PhoneInput value={editForm.telephone} onChange={v=>setEditForm(f=>({...f,telephone:v}))} inputStyle={inputStyle} tk={tk} dark={dark}/><PhoneCounter value={editForm.telephone}/></div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                <div>{label('Adresse / Quartier')}<input style={inputStyle} value={editForm.adresse} onChange={e=>setEditForm(f=>({...f,adresse:e.target.value}))} placeholder="Quartier"/></div>
+                <div>{label('Ville')}<input style={inputStyle} value={editForm.ville} onChange={e=>setEditForm(f=>({...f,ville:e.target.value.replace(/[^a-zA-ZÀ-ÿ\s-'.]/g,'')}))} placeholder="Ville"/></div>
               </div>
             </div>
-            <div style={{ marginBottom:16 }}>
-              <div style={{ fontSize:10, color:tk.sub, marginBottom:4 }}>Montant {payMode.toUpperCase()}</div>
-              <input type="number" style={inputStyle} value={payMontant} onChange={e=>setPayMontant(e.target.value)} placeholder={`Montant en ${payMode.toUpperCase()}`}/>
+            <div style={{display:'flex',gap:8,marginTop:16}}>
+              <button onClick={handleUpdate} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontWeight:700,fontSize:12}}>Enregistrer</button>
+              <button onClick={()=>setEditFourn(null)} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:12}}>Annuler</button>
             </div>
-            <div style={{ display:'flex', gap:8 }}>
-              <button onClick={handlePay} style={{ flex:1, padding:'9px', borderRadius:8, border:'none', background:'#22C55E', color:'#fff', cursor:'pointer', fontWeight:700 }}>Confirmer</button>
-              <button onClick={()=>{setShowPay(null);setPayMontant('');}} style={{ flex:1, padding:'9px', borderRadius:8, border:`1px solid ${tk.border}`, background:'none', color:tk.sub, cursor:'pointer' }}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Paiement */}
+      {showPay && (()=>{
+        const f = fournisseurs.find(x=>x.id===showPay);
+        const detteXaf = parseFloat(f?.solde_xaf||0)<0?Math.abs(parseFloat(f?.solde_xaf||0)):0;
+        const detteUsdt = parseFloat(f?.dette_usdt||0);
+        const remboXaf = parseFloat(f?.solde_xaf||0)>0?parseFloat(f?.solde_xaf||0):0;
+        const remboUsdt = parseFloat(f?.solde_usdt||0)>0?parseFloat(f?.solde_usdt||0):0;
+        const resteXaf = Math.max(0,detteXaf-remboXaf);
+        const resteUsdt = Math.max(0,detteUsdt-remboUsdt);
+        return (
+          <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
+            <div style={{background:tk.card,borderRadius:16,padding:24,width:380,border:`1px solid ${tk.border}`}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:12}}>
+                <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Paiement — {f?.nom}</h3>
+                <button onClick={()=>{setShowPay(null);setPayMontant('');}} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+              </div>
+              {/* Récap */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+                {[
+                  {lbl:'DETTE',xaf:detteXaf,usdt:detteUsdt,color:'#EF4444',bg:'rgba(239,68,68,0.08)'},
+                  {lbl:'REMBOURSÉ',xaf:remboXaf,usdt:remboUsdt,color:'#22C55E',bg:'rgba(34,197,94,0.08)'},
+                  {lbl:'RESTE',xaf:resteXaf,usdt:resteUsdt,color:'#F59E0B',bg:'rgba(245,158,11,0.08)'},
+                ].map(r=>(
+                  <div key={r.lbl} style={{background:r.bg,borderRadius:8,padding:'8px 10px'}}>
+                    <div style={{fontSize:9,color:tk.faint,marginBottom:4}}>{r.lbl}</div>
+                    {r.xaf>0&&<div style={{fontSize:10,fontWeight:700,color:r.color}}>{Math.round(r.xaf).toLocaleString('fr-FR')} XAF</div>}
+                    {r.usdt>0&&<div style={{fontSize:10,fontWeight:700,color:r.color}}>{r.usdt.toFixed(4)} USDT</div>}
+                    {r.xaf<=0&&r.usdt<=0&&<div style={{fontSize:10,color:tk.faint}}>—</div>}
+                  </div>
+                ))}
+              </div>
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:10,color:tk.sub,marginBottom:6,fontWeight:600}}>Mode de paiement</div>
+                <div style={{display:'flex',gap:12}}>
+                  {['xaf','usdt'].map(m=>(
+                    <label key={m} style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12,color:tk.ink}}>
+                      <input type="radio" checked={payMode===m} onChange={()=>setPayMode(m)} style={{accentColor:tk.accent}}/> {m.toUpperCase()} {m==='xaf'?'(Caisse)':'(USDT)'}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div style={{marginBottom:16}}>
+                <div style={{fontSize:10,color:tk.sub,marginBottom:4,fontWeight:600}}>Montant {payMode.toUpperCase()}</div>
+                <input type="text" inputMode="decimal" style={{...inputStyle,background:tk.cardB}} value={payMontant}
+                  onChange={e=>setPayMontant(e.target.value.replace(/[^0-9.]/g,''))}
+                  placeholder={`Montant en ${payMode.toUpperCase()}`}/>
+              </div>
+              <div style={{display:'flex',gap:8}}>
+                <button onClick={handlePay} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:'#22C55E',color:'#fff',cursor:'pointer',fontWeight:700}}>Confirmer paiement</button>
+                <button onClick={()=>{setShowPay(null);setPayMontant('');}} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer'}}>Annuler</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal Extrait Fournisseur */}
+      {extraitData && extraitFournisseur && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:'92%',maxWidth:620,maxHeight:'85vh',overflow:'auto',border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+              <div>
+                <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>{extraitFournisseur.nom}{extraitFournisseur.prenom?` ${extraitFournisseur.prenom}`:''}</h3>
+                <div style={{fontSize:11,color:tk.faint}}>Fournisseur · Extrait de compte</div>
+              </div>
+              <button onClick={()=>setExtraitData(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+            </div>
+            {/* Récap */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
+              <div style={{background:dark?'rgba(59,130,246,0.1)':'rgba(59,130,246,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(59,130,246,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>À ACHETER</div>
+                <div style={{fontSize:13,fontWeight:800,color:'#3B82F6'}}>{Math.round(extraitData.totals?.total_montant||0).toLocaleString('fr-FR')} XAF</div>
+              </div>
+              <div style={{background:dark?'rgba(34,197,94,0.1)':'rgba(34,197,94,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(34,197,94,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>PAYÉ</div>
+                <div style={{fontSize:13,fontWeight:800,color:'#22C55E'}}>{Math.round(extraitData.totals?.total_montant_paye||0).toLocaleString('fr-FR')} XAF</div>
+              </div>
+              <div style={{background:dark?'rgba(245,158,11,0.1)':'rgba(245,158,11,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(245,158,11,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>RESTE À PAYER</div>
+                <div style={{fontSize:13,fontWeight:800,color:'#F59E0B'}}>{Math.round(extraitData.totals?.total_montant_reste||0).toLocaleString('fr-FR')} XAF</div>
+              </div>
+            </div>
+            <div style={{fontSize:11,color:tk.sub,marginBottom:10}}>{(extraitData.transactions||[]).length} transaction(s)</div>
+            {(extraitData.transactions||[]).length===0?(
+              <div style={{textAlign:'center',padding:'20px 0',color:tk.faint,fontSize:12}}>Aucune transaction</div>
+            ):(extraitData.transactions||[]).map((tx,i)=>{
+              const montantTotal = parseFloat(tx.montant||0);
+              const montantPaye = parseFloat(tx.montant_paye||0);
+              const montantReste = parseFloat(tx.montant_reste||montantTotal - montantPaye);
+              return (
+                <div key={i} style={{display:'grid',gridTemplateColumns:'90px 1fr 80px 80px 60px',alignItems:'center',gap:8,padding:'8px 0',borderBottom:`1px solid ${tk.border}`,fontSize:11}}>
+                  <span style={{color:tk.faint}}>{tx.date?new Date(tx.date).toLocaleDateString('fr-FR'):'—'}</span>
+                  <div>
+                    <span style={{color:tk.ink,fontWeight:600,textTransform:'capitalize'}}>{tx.type} — {tx.devise||'—'}</span>
+                    <div style={{fontSize:9,color:tk.faint}}>{tx.payment_status||'—'}</div>
+                  </div>
+                  <span style={{fontWeight:700,color:tk.accent,textAlign:'right'}}>{Math.round(montantTotal).toLocaleString('fr-FR')}</span>
+                  <span style={{fontWeight:600,color:'#22C55E',textAlign:'right'}}>{Math.round(montantPaye).toLocaleString('fr-FR')}</span>
+                  <div style={{display:'flex',gap:4,justifyContent:'flex-end'}}>
+                    {montantReste > 0 && (
+                      <>
+                        <span style={{fontWeight:600,color:'#F59E0B',textAlign:'right'}}>{Math.round(montantReste).toLocaleString('fr-FR')}</span>
+                        <button onClick={()=>{setPaymentTx(tx);setPaymentAmount('');setPaymentMode('XAF');}} title="Payer" style={{background:'none',border:'none',cursor:'pointer',color:tk.accent,fontSize:11,fontWeight:600}}>Payer</button>
+                      </>
+                    )}
+                    {montantReste <= 0 && <span style={{color:'#22C55E',fontSize:9}}>✓</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Paiement Fournisseur */}
+      {paymentTx && extraitFournisseur && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:380,border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+              <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Payer le fournisseur</h3>
+              <button onClick={()=>setPaymentTx(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+            </div>
+            <div style={{marginBottom:14,fontSize:12,color:tk.sub}}>
+              <div>Fournisseur: <span style={{fontWeight:700,color:tk.ink}}>{extraitFournisseur.nom}</span></div>
+              <div>Transaction: <span style={{fontWeight:700,color:tk.accent}}>{paymentTx.type}</span> — {new Date(paymentTx.date).toLocaleDateString('fr-FR')}</div>
+              <div style={{marginTop:8}}>
+                <span style={{color:tk.faint}}>Montant:</span> <span style={{fontWeight:700,fontSize:13,color:tk.accent}}>{Math.round(parseFloat(paymentTx.montant||0)).toLocaleString('fr-FR')} XAF</span>
+              </div>
+              <div>
+                <span style={{color:tk.faint}}>Reste à payer:</span> <span style={{fontWeight:700,fontSize:13,color:'#F59E0B'}}>{Math.round(parseFloat(paymentTx.montant_reste||0)).toLocaleString('fr-FR')} XAF</span>
+              </div>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MONTANT À PAYER *</div>
+              <input 
+                type="number" 
+                value={paymentAmount} 
+                onChange={e=>setPaymentAmount(e.target.value)} 
+                placeholder="0"
+                style={{...inputStyle,fontSize:14,fontWeight:600}}
+              />
+            </div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MODE DE PAIEMENT</div>
+              <select 
+                value={paymentMode} 
+                onChange={e=>setPaymentMode(e.target.value)}
+                style={{...inputStyle}}
+              >
+                <option value="XAF">XAF (Espèces)</option>
+                <option value="USDT">USDT (Crypto)</option>
+              </select>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={handlePaymentFournisseur} disabled={loading || !paymentAmount} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontWeight:700,fontSize:12,opacity:loading||!paymentAmount?0.6:1}}>{loading?'…':'Enregistrer'}</button>
+              <button onClick={()=>setPaymentTx(null)} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:12}}>Annuler</button>
             </div>
           </div>
         </div>
@@ -3348,13 +4050,17 @@ const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, onCreateFourni
   );
 };
 
-const DevisesPageInline = ({ devises, dark, langue, tk, onCreateDevise, onDeleteDevise }) => {
+// ─────────────────────────────────────────────────────────────
+
+const DevisesPageInline = ({ devises, dark, langue, tk, onCreateDevise, onDeleteDevise, onUpdateDevise }) => {
   const [showForm, setShowForm] = useState(false);
   const [code, setCode] = useState(''); const [nomD, setNomD] = useState(''); const [taux, setTaux] = useState(''); const [desc, setDesc] = useState('');
   const [loading, setLoading] = useState(false);
+  const [editDevise, setEditDevise] = useState(null);
+  const [editNom, setEditNom] = useState(''); const [editTaux, setEditTaux] = useState(''); const [editDesc, setEditDesc] = useState('');
 
   const card = { background: tk.card, borderRadius: 14, border: `1px solid ${tk.border}`, padding: '18px 20px', boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
-  const inputStyle = { width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${tk.border}`, background: tk.cardB, color: tk.ink, fontSize: 12, outline: 'none' };
+  const inputStyle = { width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${tk.border}`, background: tk.cardB, color: tk.ink, fontSize: 12, outline: 'none', boxSizing:'border-box' };
 
   const handleCreate = async () => {
     if (!code || !taux) { toast.error('Code et taux requis'); return; }
@@ -3366,6 +4072,12 @@ const DevisesPageInline = ({ devises, dark, langue, tk, onCreateDevise, onDelete
   const handleDelete = async (id) => {
     if (!window.confirm('Supprimer cette devise ?')) return;
     try { await onDeleteDevise(id); toast.success('Supprimée'); }
+    catch (e) { toast.error(e.message); }
+  };
+  const openEdit = (d) => { setEditDevise(d); setEditNom(d.nom||''); setEditTaux(String(d.taux_conversion||'')); setEditDesc(d.description||''); };
+  const handleUpdate = async () => {
+    if (!editTaux) { toast.error('Taux requis'); return; }
+    try { await onUpdateDevise(editDevise.id, { nom: editNom||editDevise.code, taux_conversion: parseFloat(editTaux), description: editDesc }); toast.success('Devise modifiée ✓'); setEditDevise(null); }
     catch (e) { toast.error(e.message); }
   };
 
@@ -3384,10 +4096,18 @@ const DevisesPageInline = ({ devises, dark, langue, tk, onCreateDevise, onDelete
         <div style={{ ...card, borderColor: '#D4AF3740' }}>
           <h4 style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 700, color: tk.ink }}>Nouvelle devise</h4>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
-            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Code * (ex: EUR)</div><input style={inputStyle} value={code} onChange={e=>setCode(e.target.value.toUpperCase())} placeholder="EUR" maxLength={10}/></div>
-            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Nom</div><input style={inputStyle} value={nomD} onChange={e=>setNomD(e.target.value)} placeholder="Euro"/></div>
-            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Taux conversion (1 USDT = ? devise) *</div><input type="number" style={inputStyle} value={taux} onChange={e=>setTaux(e.target.value)} step="0.00001" placeholder="Ex: 7.25"/></div>
-            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Description</div><input style={inputStyle} value={desc} onChange={e=>setDesc(e.target.value)} placeholder="Optionnel"/></div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Code * (ex: EUR)</div>
+              <input style={inputStyle} value={code} onChange={e=>setCode(e.target.value.replace(/[^A-Za-z]/g,'').toUpperCase())} placeholder="EUR" maxLength={10}/>
+            </div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Nom</div>
+              <input style={inputStyle} value={nomD} onChange={e=>setNomD(e.target.value)} placeholder="Euro"/>
+            </div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Taux (1 USDT = ? devise) *</div>
+              <input type="text" inputMode="decimal" style={inputStyle} value={taux} onChange={e=>setTaux(e.target.value.replace(/[^0-9.]/g,''))} placeholder="Ex: 7.25"/>
+            </div>
+            <div><div style={{ fontSize: 10, color: tk.sub, marginBottom: 4 }}>Description</div>
+              <input style={inputStyle} value={desc} onChange={e=>setDesc(e.target.value)} placeholder="Optionnel"/>
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={handleCreate} disabled={loading} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#22C55E', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>{loading?'…':'Créer'}</button>
@@ -3396,28 +4116,71 @@ const DevisesPageInline = ({ devises, dark, langue, tk, onCreateDevise, onDelete
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 14 }}>
         {devises.length === 0 ? (
           <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '40px 0', color: tk.faint, fontSize: 13 }}>Aucune devise</div>
         ) : devises.map(d => (
-          <div key={d.id||d.code} style={{ background: tk.card, borderRadius: 12, border: `1px solid ${d.is_default?tk.accent+'40':tk.border}`, padding: '16px' }}>
+          <div key={d.id||d.code} style={{ background: tk.card, borderRadius: 12, border: `1px solid ${d.is_default?tk.accent+'40':tk.border}`, padding: '16px', position:'relative' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
               <div>
                 <div style={{ fontSize: 20, fontWeight: 900, color: tk.accent, letterSpacing: 1 }}>{d.code}</div>
                 <div style={{ fontSize: 11, color: tk.sub }}>{d.nom}</div>
               </div>
-              {d.is_default ? (
-                <span style={{ fontSize: 9, padding: '3px 7px', borderRadius: 5, background: '#22C55E20', color: '#22C55E', fontWeight: 700 }}>DÉFAUT</span>
-              ) : (
-                <button onClick={() => handleDelete(d.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444' }}><Trash2 size={14}/></button>
-              )}
+              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                {d.is_default ? (
+                  <span style={{ fontSize: 9, padding: '3px 7px', borderRadius: 5, background: '#22C55E20', color: '#22C55E', fontWeight: 700 }}>DÉFAUT</span>
+                ) : (
+                  <>
+                    <button onClick={() => openEdit(d)} title="Modifier" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#F59E0B' }}><Edit2 size={13}/></button>
+                    <button onClick={() => handleDelete(d.id)} title="Supprimer" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444' }}><Trash2 size={13}/></button>
+                  </>
+                )}
+              </div>
             </div>
-            <div style={{ fontSize: 10, color: tk.faint }}>Taux</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: tk.ink }}>{parseFloat(d.taux_conversion||0).toFixed(5)}</div>
+            <div style={{ fontSize: 10, color: tk.faint }}>Taux (1 USDT)</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: tk.ink }}>{parseFloat(d.taux_conversion||0).toFixed(5)} {d.code}</div>
             {d.description && <div style={{ fontSize: 10, color: tk.faint, marginTop: 6 }}>{d.description}</div>}
+            {d.quantite > 0 && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${tk.border}`, display:'flex', justifyContent:'space-between', fontSize:10 }}>
+                <span style={{color:tk.faint}}>Stock</span>
+                <span style={{fontWeight:700, color:tk.ink}}>{parseFloat(d.quantite).toLocaleString('fr-FR',{maximumFractionDigits:4})} {d.code}</span>
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {/* Modal modifier devise */}
+      {editDevise && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999 }}>
+          <div style={{ background:tk.card, borderRadius:16, padding:24, width:380, border:`1px solid ${tk.border}` }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:16 }}>
+              <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:tk.ink }}>Modifier — {editDevise.code}</h3>
+              <button onClick={()=>setEditDevise(null)} style={{ background:'none', border:'none', cursor:'pointer', color:tk.faint }}><X size={16}/></button>
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              <div>
+                <div style={{ fontSize:10, color:tk.sub, marginBottom:4 }}>Nom</div>
+                <input style={inputStyle} value={editNom} onChange={e=>setEditNom(e.target.value)} placeholder="Nom de la devise"/>
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:tk.sub, marginBottom:4 }}>Taux (1 USDT = ? {editDevise.code}) *</div>
+                <input type="text" inputMode="decimal" style={inputStyle} value={editTaux}
+                  onChange={e=>setEditTaux(e.target.value.replace(/[^0-9.]/g,''))}
+                  placeholder="Ex: 7.25"/>
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:tk.sub, marginBottom:4 }}>Description</div>
+                <input style={inputStyle} value={editDesc} onChange={e=>setEditDesc(e.target.value)} placeholder="Optionnel"/>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8, marginTop:16 }}>
+              <button onClick={handleUpdate} style={{ flex:1, padding:'9px', borderRadius:8, border:'none', background:tk.accent, color:'#0A1628', cursor:'pointer', fontWeight:700, fontSize:12 }}>Enregistrer</button>
+              <button onClick={()=>setEditDevise(null)} style={{ flex:1, padding:'9px', borderRadius:8, border:`1px solid ${tk.border}`, background:'none', color:tk.sub, cursor:'pointer', fontSize:12 }}>Annuler</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -3522,9 +4285,9 @@ const Dashboard = ({
   user, data, profitShare, t, langue, setLangue, dark, setDark, logs, addLog,
   onLogout, onTransaction, onUpdateProfitShare, onFinalize, onEditTransaction, onCmupUpdate,
   clients, fournisseurs, devises, distributionDetails, distributionActive,
-  onCreateClient, onDeleteClient,
-  onCreateFournisseur, onDeleteFournisseur, onPaymentFournisseur,
-  onCreateDevise, onDeleteDevise,
+  onCreateClient, onDeleteClient, onUpdateClient,
+  onCreateFournisseur, onDeleteFournisseur, onUpdateFournisseur, onPaymentFournisseur,
+  onCreateDevise, onDeleteDevise, onUpdateDevise,
   onToggleDistribution,
   apiGetClientExtrait, apiGetFournisseurExtrait,
   genererFacturePDF, loadDataFromAPI,
@@ -3552,13 +4315,14 @@ const Dashboard = ({
   React.useEffect(() => {
     if (!isPorteur) return;
     const handler = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'H') {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
         e.preventDefault();
+        e.stopPropagation();
         setShowRealPartner(v => !v);
       }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('keydown', handler, true); // capture phase
+    return () => window.removeEventListener('keydown', handler, true);
   }, [isPorteur]);
 
   const visibleTransactions = isPorteur
@@ -3826,7 +4590,6 @@ const Dashboard = ({
             { id: 'clients',       icon: <Users size={13}/>,           label: langue==='fr'?'Clients':'Clients' },
             { id: 'fournisseurs',  icon: <Store size={13}/>,           label: langue==='fr'?'Fournisseurs':'Suppliers' },
             { id: 'devises',       icon: <CreditCard size={13}/>,      label: langue==='fr'?'Devises':'Currencies' },
-            { id: 'distribution',  icon: <BarChart3 size={13}/>,       label: langue==='fr'?'Distribution':'Distribution' },
           ].map(tab => (
             <button key={tab.id} onClick={() => setPage(tab.id)} style={{
               display: 'flex', alignItems: 'center', gap: 6,
@@ -4151,8 +4914,8 @@ const Dashboard = ({
                   const isPending = tx.statut === 'pending';
                   const isAssocPending = tx.statut === 'assoc_pending';
                   const isPorteurPending = tx.statut === 'porteur_pending';
-                  // Dot orange pulsant : visible pour porteur sur les ventes assoc_pending
-                  const showOrangeDot = isPorteur && isAssocPending && tx.type === 'vente';
+                  // Dot orange pulsant : visible pour porteur sur vente ET achat assoc_pending
+                  const showOrangeDot = isPorteur && isAssocPending;
                   return (
                     <div key={tx.id} style={{
                       background: tk.card, borderRadius: 14,
@@ -4224,22 +4987,44 @@ const Dashboard = ({
                                 display:'flex', alignItems:'center', gap:3,
                               }}><Download size={11}/>{t.invoicePDF}</button>
                             )}
-                            {/* Bouton "Valider" porteur pour assoc_pending — dot orange checkmark */}
-                            {isPorteur && isAssocPending && tx.type==='vente' && (
+                            {/* Bouton Valider — assoc_pending (vente OU achat) */}
+                            {isPorteur && isAssocPending && (
                               <button onClick={async () => {
                                 try {
                                   await apiValiderAssoc(tx.id);
-                                  await loadDataFromAPI();
-                                  toast.success(langue==='fr' ? 'Vente validée' : 'Sale validated');
-                                } catch(e) { toast.error(e.message); }
+                                  toast.success(langue==='fr'
+                                    ? (tx.type==='achat' ? 'Achat validé ✅' : 'Vente validée ✅')
+                                    : (tx.type==='achat' ? 'Purchase validated ✅' : 'Sale validated ✅'));
+                                  if (typeof loadDataFromAPI === 'function') await loadDataFromAPI();
+                                } catch(e) { toast.error(e.message || 'Erreur validation'); }
                               }} style={{
                                 width:26, height:26, borderRadius:'50%',
                                 border:'none', cursor:'pointer',
-                                background:'#F59E0B', color:'#fff',
+                                background: tx.type==='achat' ? '#3B82F6' : '#F59E0B',
+                                color:'#fff',
                                 display:'flex', alignItems:'center', justifyContent:'center',
                                 flexShrink:0,
-                              }} title={langue==='fr'?'Valider la vente':'Validate sale'}>
+                              }} title={langue==='fr'
+                                ? (tx.type==='achat' ? "Valider l'achat" : 'Valider la vente')
+                                : (tx.type==='achat' ? 'Validate purchase' : 'Validate sale')}>
                                 <CheckCircle2 size={13} strokeWidth={2.5}/>
+                              </button>
+                            )}
+                            {/* Bouton Valider — porteur_pending (vente propre du porteur) */}
+                            {isPorteur && isPorteurPending && tx.type==='vente' && (
+                              <button onClick={async () => {
+                                try {
+                                  await apiValiderAssoc(tx.id);
+                                  toast.success(langue==='fr' ? 'Vente validée ✅' : 'Sale validated ✅');
+                                  if (typeof loadDataFromAPI === 'function') await loadDataFromAPI();
+                                } catch(e) { toast.error(e.message || 'Erreur validation'); }
+                              }} style={{
+                                fontSize:10, fontWeight:700, padding:'3px 10px',
+                                borderRadius:6, border:'none', cursor:'pointer',
+                                background:'#10B981', color:'#fff',
+                                display:'flex', alignItems:'center', gap:4,
+                              }}>
+                                <CheckCircle2 size={11} strokeWidth={2.5}/>{langue==='fr'?'Valider':'Validate'}
                               </button>
                             )}
                             {/* Bouton "Finaliser" pour pending normaux */}
@@ -4250,15 +5035,19 @@ const Dashboard = ({
                                 background:'#F59E0B', color:'#fff',
                               }}>{t.finaliserVente}</button>
                             )}
-                            {/* Modifier — bloqué si vente committed */}
-                            {isPorteur && !(tx.type === 'vente' && tx.statut === 'committed') && (
+                            {/* Modifier — bloqué si vente committed, toujours visible pour achat */}
+                            {isPorteur && (tx.type !== 'vente' || tx.statut !== 'committed') ? (
                               <button onClick={()=>setEditTx(tx)} style={{
                                 fontSize:10, fontWeight:600, padding:'3px 8px',
                                 borderRadius:6, border:`1px solid ${tk.border}`, cursor:'pointer',
                                 background: tk.cardB, color: tk.sub,
                                 display:'flex', alignItems:'center', gap:3,
                               }}><Edit2 size={10}/>{t.modifierTx}</button>
-                            )}
+                            ) : isPorteur && tx.type === 'vente' && tx.statut === 'committed' ? (
+                              <span style={{ fontSize:10, fontWeight:600, padding:'3px 8px', borderRadius:6, color:'#10B981', display:'flex', alignItems:'center', gap:3 }}>
+                                <CheckCircle2 size={10}/>{langue==='fr'?'Validé':'Validated'}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -4347,15 +5136,21 @@ const Dashboard = ({
               const bTotal   = isPorteur && showRealPartner ? beneficeTotalReel : beneficeTotalVisible;
 
               return (
-                <div style={{ background:tk.card, borderRadius:16, border:`2px solid ${isPorteur ? '#D4AF3730':'#3B82F630'}`, padding:'18px 20px', boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' }}>
+                <div style={{
+                  background: isPorteur && showRealPartner
+                    ? (dark ? 'rgba(212,175,55,0.07)' : 'rgba(212,175,55,0.05)')
+                    : tk.card,
+                  borderRadius:16,
+                  border: isPorteur && showRealPartner
+                    ? '2px solid rgba(212,175,55,0.55)'
+                    : `2px solid ${isPorteur ? '#D4AF3730':'#3B82F630'}`,
+                  padding:'18px 20px',
+                  boxShadow: dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)',
+                  transition: 'border-color 0.3s, background 0.3s',
+                }}>
                   <h3 style={{ margin:'0 0 12px', fontSize:13, fontWeight:800, color:tk.ink, display:'flex', alignItems:'center', gap:8 }}>
-                    <Shield size={15} color={isPorteur ? tk.accent : tk.blue}/>
+                    <Shield size={15} color={isPorteur && showRealPartner ? '#D4AF37' : (isPorteur ? tk.accent : tk.blue)}/>
                     {langue==='fr' ? 'Tableau des Partenaires' : 'Partners Overview'}
-                    {isPorteur && showRealPartner && (
-                      <span style={{ fontSize:9, color:'#D4AF37', padding:'2px 7px', borderRadius:5, background:'rgba(212,175,55,0.12)', border:'1px solid rgba(212,175,55,0.25)', display:'inline-flex', alignItems:'center', gap:3 }}>
-                        <Zap size={8} color="#D4AF37"/> {langue==='fr' ? 'Vue réelle' : 'Real view'}
-                      </span>
-                    )}
                   </h3>
 
                   {/* Porteur */}
@@ -4502,6 +5297,7 @@ const Dashboard = ({
         {page === 'clients' && <ClientsPageInline
           clients={clients} dark={dark} langue={langue} tk={tk}
           onCreateClient={onCreateClient} onDeleteClient={onDeleteClient}
+          onUpdateClient={onUpdateClient}
           apiGetClientExtrait={apiGetClientExtrait}
         />}
 
@@ -4510,7 +5306,9 @@ const Dashboard = ({
         ════════════════════════════════════════ */}
         {page === 'fournisseurs' && <FournisseursPageInline
           fournisseurs={fournisseurs} dark={dark} langue={langue} tk={tk}
+          cmup={data?.devises?.[0]?.cmup || 0}
           onCreateFournisseur={onCreateFournisseur} onDeleteFournisseur={onDeleteFournisseur}
+          onUpdateFournisseur={onUpdateFournisseur}
           onPaymentFournisseur={onPaymentFournisseur}
         />}
 
@@ -4520,6 +5318,7 @@ const Dashboard = ({
         {page === 'devises' && <DevisesPageInline
           devises={devises} dark={dark} langue={langue} tk={tk}
           onCreateDevise={onCreateDevise} onDeleteDevise={onDeleteDevise}
+          onUpdateDevise={onUpdateDevise}
         />}
 
         {/* ═══════════════════════════════════════
@@ -4538,7 +5337,8 @@ const Dashboard = ({
         <TransactionModal data={data} profitShare={profitShare} user={user}
           onClose={()=>setShowModal(false)}
           onSubmit={tx=>{onTransaction(tx);setShowModal(false);}}
-          t={t} dark={dark} langue={langue} initialType={initialTxType}/>
+          t={t} dark={dark} langue={langue} initialType={initialTxType}
+          fournisseurs={fournisseurs||[]} clients={clients||[]} devises={devises||[]}/>
       )}
       {showSettings && isPorteur && (
         <SettingsModal profitShare={profitShare} onClose={()=>setShowSettings(false)}
@@ -4626,27 +5426,34 @@ export default function App() {
     localStorage.setItem('fx_dark', JSON.stringify(dark));
   }, [langue, dark]);
 
-  // ── Chargement données depuis l'API après connexion ──
+  // ── loadDataFromAPI ──────────────────────────────────────────
   const loadDataFromAPI = useCallback(async () => {
+    const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+    const tok  = localStorage.getItem('fx_token');
+    const hdr  = { 'Content-Type':'application/json', ...(tok?{Authorization:`Bearer ${tok}`}:{}) };
+    const safe = async (res) => { try { const j = await res.json(); return res.ok ? j : null; } catch { return null; } };
+
     try {
       setLoading(true);
-      const { comptes, txData, stock, settings, repartition } = await apiLoadAll();
 
-      // Reconstruire l'état data depuis les réponses API
+      // ── 1. Chargements principaux en parallèle ──
+      const [cRes, txRes, stRes, repRes] = await Promise.all([
+        fetch(`${BASE}/stats/comptes`,     {headers:hdr}),
+        fetch(`${BASE}/transactions?limit=500`,{headers:hdr}),
+        fetch(`${BASE}/stock`,             {headers:hdr}),
+        fetch(`${BASE}/stats/repartition`, {headers:hdr}),
+      ]);
+      const [comptes, txData, stock, repartition] = await Promise.all([cRes,txRes,stRes,repRes].map(safe));
+      if (!comptes || !txData) throw new Error('Données principales indisponibles');
+
+      // ── 2. Normaliser transactions ──
       const transactions = (txData.transactions || []).map(tx => ({
         ...tx,
-        // Normaliser les champs API → format frontend
-        id: tx.id,
-        type: tx.type,
-        date: new Date(tx.date || tx.date_enregistrement),
-        dateEnregistrement: tx.date_enregistrement ? new Date(tx.date_enregistrement) : new Date(tx.date),
+        id: tx.id, type: tx.type,
+        date: new Date(tx.date_operation || tx.date || tx.date_enregistrement || Date.now()),
+        dateEnregistrement: tx.date_enregistrement ? new Date(tx.date_enregistrement) : new Date(),
         dateModification: tx.date_modification ? new Date(tx.date_modification) : null,
-        montant: parseFloat(
-          tx.montant ||
-          tx.prix_achat_total ||
-          tx.valeur_vente_visible ||   // ventes : valeur encaissée
-          0
-        ),
+        montant: parseFloat(tx.montant || tx.prix_achat_total || tx.valeur_vente_visible || 0),
         quantite: parseFloat(tx.quantite || 0),
         taux: parseFloat(tx.taux_achat_unitaire || 0),
         devise: tx.devise || 'USDT',
@@ -4668,79 +5475,50 @@ export default function App() {
         porteurPct: parseInt(tx.pourcentage_porteur || 70),
         associePct: parseInt(tx.pourcentage_associe || 30),
         usdtConsomme: parseFloat(tx.usdt_consomme || 0),
-        client: tx.client,
-        fournisseur: tx.fournisseur,
-        beneficiaire: tx.beneficiaire,
+        client: tx.client, fournisseur: tx.fournisseur, beneficiaire: tx.beneficiaire,
         sourceCompte: tx.use_caisse ? 'caisse' : 'depot',
-        statut: tx.statut,
-        userId: tx.user_id,
-        userName: tx.user_name,
-        stockUsdt_avant: 0,
-        stockUsdt_apres: 0,
+        statut: tx.statut, userId: tx.user_id, userName: tx.user_name,
+        stockUsdt_avant: 0, stockUsdt_apres: 0,
       }));
 
-      // Recalculer la chaîne stock avant/après pour tous les mouvements USDT
-      const sorted = [...transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
-      let stockCourant = 0;
+      // ── 3. Chaîne stock ──
+      const sorted = [...transactions].sort((a, b) => a.date - b.date);
+      let sc = 0;
       const withStock = sorted.map(row => {
         if (row.type === 'achat' && (row.devise === 'USDT' || !row.deviseVente)) {
-          const qte = row.quantite || 0;
-          const avant = stockCourant;
-          stockCourant = avant + qte;
-          return { ...row, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
+          const av = sc; sc = av + (row.quantite||0);
+          return { ...row, stockUsdt_avant: av, stockUsdt_apres: sc };
         } else if (row.type === 'vente') {
-          const conso = row.usdtConsomme || 0;
-          const avant = stockCourant;
-          stockCourant = Math.max(0, avant - conso);
-          return { ...row, stockUsdt_avant: avant, stockUsdt_apres: stockCourant };
+          const av = sc; sc = Math.max(0, av - (row.usdtConsomme||0));
+          return { ...row, stockUsdt_avant: av, stockUsdt_apres: sc };
         }
         return row;
       });
-      // Remettre dans l'ordre original (DESC date)
-      const transactionsWithStock = transactions.map(row =>
-        withStock.find(w => w.id === row.id) || row
-      );
+      const transactionsWithStock = transactions.map(r => withStock.find(w => w.id === r.id) || r);
 
       setData({
         depot: parseFloat(comptes.depot || 0),
         caisse: parseFloat(comptes.caisse || 0),
-        devises: [{ devise: 'USDT', quantite: parseFloat(stock.quantite || 0), cmup: parseFloat(stock.cmup || 0) }],
+        devises: [{ devise:'USDT', quantite: parseFloat(stock?.quantite||0), cmup: parseFloat(stock?.cmup||0) }],
         transactions: transactionsWithStock,
       });
 
-      // Répartition des profits
-      const porteurR = repartition.repartition?.find(r => r.role === 'porteur');
-      const associeR = repartition.repartition?.find(r => r.role === 'associe');
-      if (porteurR) {
-        setProfitShare({
-          porteur: parseFloat(porteurR.pourcentage_defaut || 70),
-          associe: parseFloat(associeR?.pourcentage_defaut || 30),
-        });
+      if (repartition) {
+        const pR = repartition.repartition?.find(r => r.role === 'porteur');
+        const aR = repartition.repartition?.find(r => r.role === 'associe');
+        if (pR) setProfitShare({ porteur: parseFloat(pR.pourcentage_defaut||70), associe: parseFloat(aR?.pourcentage_defaut||30) });
       }
 
-      // ── v5.6.0+ : Charger clients, fournisseurs, devises, distribution ──
-      try {
-        const [cliRes, fournRes, devRes] = await Promise.allSettled([
-          apiGetClients(),
-          apiGetFournisseurs(),
-          apiGetDevises(),
-        ]);
-        if (cliRes.status === 'fulfilled')   setClients(cliRes.value?.clients || []);
-        if (fournRes.status === 'fulfilled') setFournisseurs(fournRes.value?.fournisseurs || []);
-        if (devRes.status === 'fulfilled')   setDevises(devRes.value?.devises || []);
-      } catch (e) { console.warn('Nouveaux endpoints non disponibles:', e.message); }
+      // ── 4. Secondaire silencieux ──
+      const [cliR, fournR, devR] = await Promise.allSettled([apiGetClients(), apiGetFournisseurs(), apiGetDevises()]);
+      if (cliR.status==='fulfilled')   setClients(cliR.value?.clients||[]);
+      if (fournR.status==='fulfilled') setFournisseurs(fournR.value?.fournisseurs||[]);
+      if (devR.status==='fulfilled')   setDevises(devR.value?.devises||[]);
+      try { setDistributionDetails(await apiGetDistributionDetails()); } catch {}
 
-      try {
-        const [distDetails, distStatus] = await Promise.allSettled([
-          apiGetDistributionDetails(),
-          apiGetDistributionStatus(),
-        ]);
-        if (distDetails.status === 'fulfilled') setDistributionDetails(distDetails.value);
-        if (distStatus.status === 'fulfilled')  setDistributionActive(distStatus.value?.porteur || false);
-      } catch (e) { console.warn('Distribution non disponible:', e.message); }
     } catch (err) {
-      console.error('Erreur chargement API:', err.message);
-      toast.error('Erreur chargement des données : ' + err.message);
+      console.error('loadDataFromAPI:', err);
+      toast.error('Erreur chargement : ' + (err.message || 'inconnue'));
     } finally {
       setLoading(false);
     }
@@ -4825,6 +5603,9 @@ export default function App() {
           client: tx.client,
           taux_vente_cache: tx.tauxCache || null,
           statut: tx.statut || 'porteur_pending',
+          id_fournisseur: tx.idFournisseur || null,
+          montant_paye: tx.montant_paye !== undefined ? tx.montant_paye : null,
+          date: tx.date || null,
         };
       } else if (tx.type === 'achat') {
         payload = {
@@ -4833,11 +5614,13 @@ export default function App() {
           taux_unitaire: tx.taux,
           use_caisse: tx.sourceCompte === 'caisse',
           fournisseur: tx.fournisseur || null,
+          id_fournisseur: tx.idFournisseur || null,
+          date: tx.date || null,
         };
       } else if (tx.type === 'depense') {
-        payload = { type: 'depense', montant: tx.montant, categorie: tx.categorie, description: tx.description };
+        payload = { type: 'depense', montant: tx.montant, categorie: tx.categorie, description: tx.description, date: tx.date || null };
       } else if (tx.type === 'retrait') {
-        payload = { type: 'retrait', montant: tx.montant, beneficiaire: tx.beneficiaire };
+        payload = { type: 'retrait', montant: tx.montant, beneficiaire: tx.beneficiaire, date: tx.date || null };
       }
 
       await apiCreateTransaction(payload);
@@ -4940,8 +5723,8 @@ export default function App() {
   };
 
   // ── v5.6.0+ handlers clients ──
-  const handleCreateClient = async (nom, numero, adresse) => {
-    await apiCreateClient(nom, numero, adresse);
+  const handleCreateClient = async (nom, prenom, telephone, adresse) => {
+    await apiCreateClient(nom, telephone, adresse, prenom);
     const r = await apiGetClients();
     setClients(r?.clients || []);
   };
@@ -4950,9 +5733,19 @@ export default function App() {
     const r = await apiGetClients();
     setClients(r?.clients || []);
   };
+  const handleUpdateClient = async (id, nom, prenom, telephone, adresse) => {
+    await apiUpdateClient(id, { nom, prenom, telephone, adresse });
+    const r = await apiGetClients();
+    setClients(r?.clients || []);
+  };
   // ── v5.6.0+ handlers fournisseurs ──
-  const handleCreateFournisseur = async (nom, numero, adresse) => {
-    await apiCreateFournisseur(nom, numero, adresse);
+  const handleCreateFournisseur = async (nom, prenom, telephone, adresse) => {
+    await apiCreateFournisseur(nom, telephone, adresse, prenom);
+    const r = await apiGetFournisseurs();
+    setFournisseurs(r?.fournisseurs || []);
+  };
+  const handleUpdateFournisseur = async (id, nom, prenom, telephone, adresse) => {
+    await apiUpdateFournisseur(id, { nom, prenom, telephone, adresse });
     const r = await apiGetFournisseurs();
     setFournisseurs(r?.fournisseurs || []);
   };
@@ -4977,13 +5770,17 @@ export default function App() {
     const r = await apiGetDevises();
     setDevises(r?.devises || []);
   };
+  const handleUpdateDevise = async (id, data) => {
+    await apiUpdateDevise(id, data);
+    const r = await apiGetDevises();
+    setDevises(r?.devises || []);
+  };
   // ── v5.6.0+ handler distribution toggle ──
   const handleToggleDistribution = async () => {
     const result = await apiToggleDistribution();
     setDistributionActive(v => !v);
-    const [d, s] = await Promise.allSettled([apiGetDistributionDetails(), apiGetDistributionStatus()]);
-    if (d.status === 'fulfilled') setDistributionDetails(d.value);
-    if (s.status === 'fulfilled') setDistributionActive(s.value?.porteur || false);
+    const d = await apiGetDistributionDetails();
+    setDistributionDetails(d);
     return result;
   };
 
@@ -5017,10 +5814,11 @@ export default function App() {
         t={t} langue={langue} setLangue={setLangue} dark={dark} setDark={setDark} logs={logs} addLog={addLog}
         clients={clients} fournisseurs={fournisseurs} devises={devises}
         distributionDetails={distributionDetails} distributionActive={distributionActive}
-        onCreateClient={handleCreateClient} onDeleteClient={handleDeleteClient}
+        onCreateClient={handleCreateClient} onDeleteClient={handleDeleteClient} onUpdateClient={handleUpdateClient}
         onCreateFournisseur={handleCreateFournisseur} onDeleteFournisseur={handleDeleteFournisseur}
+        onUpdateFournisseur={handleUpdateFournisseur}
         onPaymentFournisseur={handlePaymentFournisseur}
-        onCreateDevise={handleCreateDevise} onDeleteDevise={handleDeleteDevise}
+        onCreateDevise={handleCreateDevise} onDeleteDevise={handleDeleteDevise} onUpdateDevise={handleUpdateDevise}
         onToggleDistribution={handleToggleDistribution}
         apiGetClientExtrait={apiGetClientExtrait} apiGetFournisseurExtrait={apiGetFournisseurExtrait}
         genererFacturePDF={genererFacturePDF} loadDataFromAPI={loadDataFromAPI}

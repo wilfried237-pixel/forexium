@@ -8,7 +8,7 @@ router.use(authenticate);
 
 // GET /api/stock
 router.get('/', asyncHandler(async (req, res) => {
-  const rows = await query('SELECT * FROM stock_devises WHERE devise = ?', ['USDT']);
+  const rows = await query('SELECT * FROM stock WHERE devise = ?', ['USDT']);
   if (rows.length === 0)
     return res.json({ devise: 'USDT', quantite: 0, cmup: 0, valeur_totale: 0 });
 
@@ -27,7 +27,7 @@ router.put('/cmup', asyncHandler(async (req, res) => {
   if (!cmup || isNaN(cmup) || parseFloat(cmup) <= 0)
     return res.status(400).json({ error: 'CMUP invalide' });
 
-  await query('UPDATE stock_devises SET cmup = ?, updated_at = NOW() WHERE devise = ?', [parseFloat(cmup), devise]);
+  await query('UPDATE stock SET cmup = ?, updated_at = NOW() WHERE devise = ?', [parseFloat(cmup), devise]);
   await query(
     "INSERT INTO logs (id, date_heure, type_evenement, description, user_id) VALUES (?, NOW(), 'cmup', ?, ?)",
     [`LOG_${Date.now()}`, `CMUP ${devise} → ${cmup}`, req.user.id]

@@ -13,7 +13,7 @@ dotenv.config();
       port:     parseInt(process.env.DB_PORT) || 3306,
       user:     process.env.DB_USER || 'root',
       password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'forexium_v5',
+      database: process.env.DB_NAME || 'forexium_v7',
     });
 
     const conn = await pool.getConnection();
@@ -36,8 +36,8 @@ dotenv.config();
         ) ENGINE=InnoDB`
       },
       {
-        name: 'comptes_clients',
-        sql: `CREATE TABLE IF NOT EXISTS comptes_clients (
+        name: 'clients',
+        sql: `CREATE TABLE IF NOT EXISTS clients (
           id INT AUTO_INCREMENT PRIMARY KEY,
           nom VARCHAR(255) NOT NULL,
           numero VARCHAR(50) UNIQUE NOT NULL,
@@ -50,8 +50,8 @@ dotenv.config();
         ) ENGINE=InnoDB`
       },
       {
-        name: 'comptes_fournisseurs',
-        sql: `CREATE TABLE IF NOT EXISTS comptes_fournisseurs (
+        name: 'fournisseurs',
+        sql: `CREATE TABLE IF NOT EXISTS fournisseurs (
           id INT AUTO_INCREMENT PRIMARY KEY,
           nom VARCHAR(255) NOT NULL,
           numero VARCHAR(50) UNIQUE NOT NULL,
@@ -66,8 +66,8 @@ dotenv.config();
         ) ENGINE=InnoDB`
       },
       {
-        name: 'devises_personnalisees',
-        sql: `CREATE TABLE IF NOT EXISTS devises_personnalisees (
+        name: 'devises',
+        sql: `CREATE TABLE IF NOT EXISTS devises (
           id INT AUTO_INCREMENT PRIMARY KEY,
           code VARCHAR(10) NOT NULL UNIQUE,
            nom VARCHAR(100),
@@ -80,8 +80,8 @@ dotenv.config();
         ) ENGINE=InnoDB`
       },
       {
-        name: 'stock_devises',
-        sql: `CREATE TABLE IF NOT EXISTS stock_devises (
+        name: 'stock',
+        sql: `CREATE TABLE IF NOT EXISTS stock (
           id INT AUTO_INCREMENT PRIMARY KEY,
           devise VARCHAR(10) UNIQUE NOT NULL DEFAULT 'USDT',
           quantite DECIMAL(18,8) DEFAULT 0,
@@ -104,10 +104,17 @@ dotenv.config();
         sql: `CREATE TABLE IF NOT EXISTS transactions (
           id VARCHAR(100) PRIMARY KEY,
           user_id VARCHAR(50),
-          type ENUM('achat', 'vente', 'depense', 'retrait', 'versement') NOT NULL,
+          type ENUM('achat','vente','depense','retrait','versement','payement_client','payement_fournisseur') NOT NULL,
           date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           date_enregistrement TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           montant DECIMAL(18,2),
+          montant_paye DECIMAL(18,2) DEFAULT 0,
+          montant_reste DECIMAL(18,2) DEFAULT 0,
+          payment_status ENUM('unpaid','partial','paid') DEFAULT 'unpaid',
+          mode_paiement VARCHAR(20) DEFAULT NULL,
+          client_id INT DEFAULT NULL,
+          id_fournisseur INT DEFAULT NULL,
+          notes TEXT DEFAULT NULL,
           client VARCHAR(255),
           fournisseur VARCHAR(255),
           beneficiaire VARCHAR(255),
@@ -121,21 +128,15 @@ dotenv.config();
           benefice_visible DECIMAL(18,2),
           benefice_cache DECIMAL(18,2),
           statut ENUM('pending', 'porteur_pending', 'assoc_pending', 'committed') DEFAULT 'pending',
+          date_modification TIMESTAMP NULL DEFAULT NULL,
           FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
           INDEX idx_user_id (user_id),
           INDEX idx_type (type),
           INDEX idx_date (date DESC),
-          INDEX idx_statut (statut)
-        ) ENGINE=InnoDB`
-      },
-      {
-        name: 'repartition_profits',
-        sql: `CREATE TABLE IF NOT EXISTS repartition_profits (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          role ENUM('porteur', 'associe') UNIQUE NOT NULL,
-          pourcentage_defaut DECIMAL(5,2) DEFAULT 70.00,
-          total_accumule_visible DECIMAL(18,2) DEFAULT 0,
-          total_accumule_cache DECIMAL(18,2) DEFAULT 0
+          INDEX idx_statut (statut),
+          INDEX idx_client_id (client_id),
+          INDEX idx_id_fournisseur (id_fournisseur),
+          INDEX idx_type_statut (type, statut)
         ) ENGINE=InnoDB`
       },
       {
@@ -170,15 +171,15 @@ dotenv.config();
     console.log('📝 Insertion des données par défaut...\n');
 
     try {
-      await conn.query('INSERT IGNORE INTO devises_personnalisees (code, nom, taux_conversion, is_default) VALUES (?, ?, ?, ?)', ['RMB', 'Yuan Chinois', 0.15, true]);
-      await conn.query('INSERT IGNORE INTO devises_personnalisees (code, nom, taux_conversion, is_default) VALUES (?, ?, ?, ?)', ['USD', 'Dollar Américain', 1.00, true]);
+      await conn.query('INSERT IGNORE INTO devises (code, nom, taux_conversion, is_default) VALUES (?, ?, ?, ?)', ['RMB', 'Yuan Chinois', 0.15, true]);
+      await conn.query('INSERT IGNORE INTO devises (code, nom, taux_conversion, is_default) VALUES (?, ?, ?, ?)', ['USD', 'Dollar Américain', 1.00, true]);
       console.log('  ✓ Devises');
     } catch (e) {
       console.log('  ✓ Devises (déjà existantes)');
     }
 
     try {
-      await conn.query('INSERT IGNORE INTO stock_devises (devise, quantite, cmup) VALUES (?, ?, ?)', ['USDT', 0, 0]);
+      await conn.query('INSERT IGNORE INTO stock (devise, quantite, cmup) VALUES (?, ?, ?)', ['USDT', 0, 0]);
       console.log('  ✓ Stock USDT');
     } catch (e) {
       console.log('  ✓ Stock USDT (déjà existant)');
@@ -213,7 +214,9 @@ dotenv.config();
       }
     }
 
-    // Répartition des profits
+    // Répartition des profits (table `repartition_profits`)
+    // Note : les anciennes tables `distribution` / `distribution_partenaires` ont été supprimées —
+    //        toutes les parts porteur/associé sont stockées dans `transactions`.
     try {
       await conn.query('INSERT IGNORE INTO repartition_profits (role, pourcentage_defaut) VALUES (?, ?)', ['porteur', 70]);
       await conn.query('INSERT IGNORE INTO repartition_profits (role, pourcentage_defaut) VALUES (?, ?)', ['associe', 30]);

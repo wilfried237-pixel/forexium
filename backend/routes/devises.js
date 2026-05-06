@@ -7,6 +7,16 @@ const router = express.Router();
 router.use(authenticate);
 
 // ─────────────────────────────────────────────────────────────
+// VALIDATION
+// ─────────────────────────────────────────────────────────────
+
+const validateCodeDevise = (code) => {
+  // Uniquement lettres majuscules (généralement 3 lettres: USD, EUR, GBP)
+  const regex = /^[A-Z]{2,5}$/;
+  return regex.test(code);
+};
+
+// ─────────────────────────────────────────────────────────────
 // GET /api/devises - Lister toutes les devises
 // ─────────────────────────────────────────────────────────────
 router.get('/', asyncHandler(async (req, res) => {
@@ -36,6 +46,11 @@ router.post('/', asyncHandler(async (req, res) => {
   // Validation
   if (!code || !taux_conversion) {
     return res.status(400).json({ error: 'Code et taux de conversion requis' });
+  }
+
+  // VALIDATION: Code uniquement lettres
+  if (!validateCodeDevise(code.toUpperCase())) {
+    return res.status(400).json({ error: 'Le code de devise doit contenir uniquement des lettres (2-5 caractères)' });
   }
 
   // Vérifier que le code n'existe pas déjà
@@ -88,6 +103,10 @@ router.put('/:id', asyncHandler(async (req, res) => {
 
   // Vérifier que le code n'existe pas ailleurs
   if (code) {
+    if (!validateCodeDevise(code.toUpperCase())) {
+      return res.status(400).json({ error: 'Le code de devise doit contenir uniquement des lettres (2-5 caractères)' });
+    }
+
     const existing = await query(
       'SELECT id FROM devises_personnalisees WHERE code = ? AND id != ?',
       [code.toUpperCase(), id]
@@ -136,37 +155,27 @@ router.put('/:id', asyncHandler(async (req, res) => {
 router.delete('/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
 
-  // Vérifier que la devise existe et n'est pas par défaut
-  const devise = await query(
-    'SELECT is_default FROM devises_personnalisees WHERE id = ?',
-    [id]
-  );
-
-  if (!devise || devise.length === 0) {
+  const devise = await query('SELECT id, code, is_default FROM devises_personnalisees WHERE id = ?', [id]);
+  if (!devise || devise.length === 0)
     return res.status(404).json({ error: 'Devise non trouvée' });
-  }
 
-  if (devise[0].is_default) {
-    return res.status(400).json({ error: 'Impossible de supprimer une devise par défaut' });
-  }
+  if (devise[0].is_default)
+    return res.status(400).json({ error: 'Impossible de supprimer une devise par défaut (RMB, USD)' });
 
-  // Vérifier qu'il n'y a pas de transactions avec cette devise
-  const transactions = await query(
-    'SELECT COUNT(*) as count FROM transactions WHERE devise_vente = (SELECT code FROM devises_personnalisees WHERE id = ?)',
-    [id]
+  // Récupérer le code d'abord, puis vérifier les transactions
+  const txCount = await query(
+    'SELECT COUNT(*) as count FROM transactions WHERE devise_vente = ?',
+    [devise[0].code]
   );
-
-  if (transactions[0].count > 0) {
-    return res.status(400).json({ error: 'Impossible de supprimer: des transactions utilisent cette devise' });
-  }
+  if (parseInt(txCount[0].count) > 0)
+    return res.status(400).json({ error: `Impossible: ${txCount[0].count} transaction(s) utilisent cette devise` });
 
   await query('DELETE FROM devises_personnalisees WHERE id = ?', [id]);
-
   res.json({ success: true });
 }));
 
 // ─────────────────────────────────────────────────────────────
-// GET /api/devises/defaut - Devises par défaut (RMB et USD)
+// GET /api/devises/defaut/list - Devises par défaut (RMB et USD)
 // ─────────────────────────────────────────────────────────────
 router.get('/defaut/list', asyncHandler(async (req, res) => {
   const devises = await query(`

@@ -25,7 +25,7 @@ const pool = mysql.createPool({
     console.log('✓ Utilisateurs supprimés');
 
     // 3. Réinitialiser le stock USDT
-    await conn.query('UPDATE stock_devises SET quantite = 0, cmup = 0 WHERE devise = "USDT"');
+    await conn.query('UPDATE stock SET quantite = 0, cmup = 0 WHERE devise = "USDT"');
     console.log('✓ Stock USDT réinitialisé à 0');
 
     // 4. Réinitialiser le dépôt et la caisse
@@ -34,8 +34,14 @@ const pool = mysql.createPool({
     console.log('✓ Comptes réinitialisés (Dépôt: 0 XAF, Caisse: 0 XAF)');
 
     // 5. Réinitialiser la répartition des profits (70/30)
-    await conn.query('UPDATE repartition_profits SET total_accumule_visible = 0, total_accumule_cache = 0');
-    console.log('✓ Répartition des profits réinitialisée (totaux à 0)');
+    //    Note : la table `distribution` a été supprimée. La répartition vit
+    //    dans `repartition_profits` et les parts sont stockées par transaction.
+    try {
+      await conn.query('UPDATE repartition_profits SET total_accumule_visible = 0, total_accumule_cache = 0');
+      console.log('✓ Répartition des profits réinitialisée (totaux à 0)');
+    } catch (e) {
+      console.log('  (repartition_profits non disponible — ignoré)');
+    }
 
     // 6. Réinitialiser les sessions
     await conn.query('DELETE FROM sessions');

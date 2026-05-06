@@ -1,0 +1,200 @@
+{
+  "info": {
+    "name": "FOREXIUM - Paiements Clients & Fournisseurs",
+    "description": "Collection d'endpoints pour tester le système de paiements",
+    "version": "1.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "CLIENTS - Paiements",
+      "item": [
+        {
+          "name": "Récupérer l'extrait d'un client",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer YOUR_TOKEN",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://localhost:3000/api/payments/clients/1/account",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "payments", "clients", "1", "account"]
+            },
+            "description": "Récupère l'extrait complet d'un client avec toutes ses transactions et le reste à payer"
+          },
+          "response": []
+        },
+        {
+          "name": "Enregistrer un paiement client",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer YOUR_TOKEN",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"montant_paye\": 5000,\n  \"devise_paiement\": \"XAF\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/payments/clients/1/transaction/TX_123",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "payments", "clients", "1", "transaction", "TX_123"]
+            },
+            "description": "Enregistre un paiement partiel pour une transaction spécifique d'un client"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "FOURNISSEURS - Paiements",
+      "item": [
+        {
+          "name": "Récupérer l'extrait d'un fournisseur",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer YOUR_TOKEN",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://localhost:3000/api/payments/fournisseurs/1/account",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "payments", "fournisseurs", "1", "account"]
+            },
+            "description": "Récupère l'extrait complet d'un fournisseur avec soldes et historique des paiements"
+          },
+          "response": []
+        },
+        {
+          "name": "Payer un fournisseur (XAF)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer YOUR_TOKEN",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"montant\": 10000,\n  \"devise\": \"XAF\",\n  \"transaction_id\": \"TX_456\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/payments/fournisseurs/1/pay",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "payments", "fournisseurs", "1", "pay"]
+            },
+            "description": "Enregistre un paiement au fournisseur en XAF"
+          },
+          "response": []
+        },
+        {
+          "name": "Payer un fournisseur (USDT)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer YOUR_TOKEN",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"montant\": 50.5,\n  \"devise\": \"USDT\",\n  \"transaction_id\": \"TX_456\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/payments/fournisseurs/1/pay",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "payments", "fournisseurs", "1", "pay"]
+            },
+            "description": "Enregistre un paiement au fournisseur en USDT"
+          },
+          "response": []
+        },
+        {
+          "name": "Payer sans lier à une transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer YOUR_TOKEN",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"montant\": 5000,\n  \"devise\": \"XAF\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/api/payments/fournisseurs/1/pay",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["api", "payments", "fournisseurs", "1", "pay"]
+            },
+            "description": "Enregistre un paiement sans le lier à une transaction spécifique (paiement global)"
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost:3000/api",
+      "type": "string"
+    },
+    {
+      "key": "TOKEN",
+      "value": "YOUR_BEARER_TOKEN",
+      "type": "string"
+    }
+  ]
+}

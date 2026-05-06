@@ -55,17 +55,92 @@ router.put('/:id/valider-assoc', asyncHandler(async (req, res) => {
 
   await dbTransaction(async (conn) => {
     const [rows] = await conn.query(
-      "SELECT * FROM transactions WHERE id = ? AND statut = 'assoc_pending'", [id]
+      "SELECT * FROM transactions WHERE id = ? AND statut IN ('assoc_pending','porteur_pending','pending')", [id]
     );
     if (!rows || rows.length === 0)
-      throw new Error('Transaction introuvable ou déjà validée');
+      throw new Error('Transaction introuvable ou déjà validée (statut committed)');
+
+    const tx = rows[0];
 
     await conn.query(
       "UPDATE transactions SET statut = 'committed', date_modification = NOW() WHERE id = ?", [id]
     );
+
+    // Si c'est un achat en attente → mettre à jour le stock et débiter le compte maintenant
+    if (tx.type === 'achat' && tx.devise === 'USDT') {
+      const qte       = parseFloat(tx.quantite || 0);
+      const prixTotal = parseFloat(tx.prix_achat_total || 0);
+      const nouveauCmup = parseFloat(tx.nouveau_cmup || 0);
+      const source    = tx.use_caisse ? 'caisse' : 'depot';
+
+      await conn.query(
+        'UPDATE stock SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
+        [qte, nouveauCmup, 'USDT']
+      );
+      await conn.query(
+        'UPDATE comptes SET montant = montant - ? WHERE type_compte = ?',
+        [prixTotal, source]
+      );
+    }
+
     await conn.query(
       "INSERT INTO logs (id, date_heure, type_evenement, description, user_id) VALUES (?, NOW(), 'validation', ?, ?)",
-      [`LOG_${Date.now()}`, `Vente associé validée par porteur: ${id}`, req.user.id]
+      [`LOG_${Date.now()}`, `Transaction validée par porteur: ${id} (type: ${tx.type})`, req.user.id]
+    );
+  });
+
+  res.json({ success: true, transaction_id: id });
+}));
+
+// ─────────────────────────────────────────────────────────────
+// PUT /api/transactions/:id/valider
+// Validation générique d'une transaction (vente/achat)
+// ─────────────────────────────────────────────────────────────
+router.put('/:id/valider', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { payment_status, montant_paye } = req.body || {};
+
+  await dbTransaction(async (conn) => {
+    const [rows] = await conn.query('SELECT * FROM transactions WHERE id = ?', [id]);
+    if (!rows || rows.length === 0) throw new Error('Transaction introuvable');
+    const tx = rows[0];
+    if (tx.statut === 'committed') throw new Error('Transaction déjà validée');
+
+    // Mettre à committed
+    await conn.query("UPDATE transactions SET statut = 'committed', date_modification = NOW() WHERE id = ?", [id]);
+
+    // Si achat USDT : mise à jour stock et comptes
+    if (tx.type === 'achat' && tx.devise === 'USDT') {
+      const qte       = parseFloat(tx.quantite || 0);
+      const prixTotal = parseFloat(tx.prix_achat_total || 0);
+      const nouveauCmup = parseFloat(tx.nouveau_cmup || 0);
+      const source    = tx.use_caisse ? 'caisse' : 'depot';
+
+      await conn.query(
+        'UPDATE stock SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
+        [qte, nouveauCmup, 'USDT']
+      );
+      await conn.query(
+        'UPDATE comptes SET montant = montant - ? WHERE type_compte = ?',
+        [prixTotal, source]
+      );
+    }
+
+    // Si paiement partiel fourni, mettre à jour montants
+    if (montant_paye !== undefined || payment_status !== undefined) {
+      const montantPayeActuel = parseFloat(tx.montant_paye || 0);
+      const nouveauMontantPaye = montant_paye !== undefined ? montantPayeActuel + parseFloat(montant_paye) : montantPayeActuel;
+      const montantTotal = parseFloat(tx.montant || tx.valeur_vente_visible || 0);
+      const montantReste = Math.max(0, montantTotal - nouveauMontantPaye);
+      await conn.query(
+        'UPDATE transactions SET montant_paye = ?, montant_reste = ?, payment_status = ? WHERE id = ?',
+        [nouveauMontantPaye, montantReste, payment_status || tx.payment_status || null, id]
+      );
+    }
+
+    await conn.query(
+      "INSERT INTO logs (id, date_heure, type_evenement, description, user_id) VALUES (?, NOW(), 'validation', ?, ?)",
+      [`LOG_${Date.now()}`, `Validation transaction: ${id} (type: ${tx.type})`, req.user.id]
     );
   });
 
@@ -117,29 +192,10 @@ router.put('/:id/finaliser', asyncHandler(async (req, res) => {
       [tc, valVenteC, benC, partPC, partAC, pctP, pctA, id]
     );
 
-    await conn.query(
-      'UPDATE repartition_profits SET total_accumule_cache = total_accumule_cache + ? WHERE role = ?',
-      [partPC, 'porteur']
-    );
-    await conn.query(
-      'UPDATE repartition_profits SET total_accumule_cache = total_accumule_cache + ? WHERE role = ?',
-      [partAC, 'associe']
-    );
-
-    // ── Mettre à jour distribution_partenaires avec bénéfices cachés ──
-    try {
-      await conn.query(
-        `UPDATE distribution_partenaires SET benefice_cache = ? WHERE transaction_id = ? AND role = 'porteur'`,
-        [partPC, id]
-      );
-      await conn.query(
-        `UPDATE distribution_partenaires SET benefice_cache = ? WHERE transaction_id = ? AND role = 'associe'`,
-        [partAC, id]
-      );
-    } catch (distErr) {
-      // Table optionnelle - continuer sans erreur
-      console.warn('distribution_partenaires non disponible:', distErr.message);
-    }
+    // (NOTE) Tables `distribution` et `distribution_partenaires` SUPPRIMÉES.
+    // Les bénéfices visible/caché et parts porteur/associé sont stockés
+    // directement dans la table `transactions` ; les totaux sont calculés
+    // par agrégation SQL dans /api/stats.
 
     await conn.query(
       "INSERT INTO logs (id, date_heure, type_evenement, description, user_id) VALUES (?, NOW(), 'finalisation', ?, ?)",
@@ -245,7 +301,7 @@ router.put('/:id', asyncHandler(async (req, res) => {
       const nouveauConso = parseFloat(changes.usdtConsomme);
       const deltaQte = ancienConso - nouveauConso;
       await conn.query(
-        'UPDATE stock_devises SET quantite = quantite + ? WHERE devise = ?',
+        'UPDATE stock SET quantite = quantite + ? WHERE devise = ?',
         [deltaQte, 'USDT']
       );
     }
@@ -258,7 +314,7 @@ router.put('/:id', asyncHandler(async (req, res) => {
       const nouveauPrix  = nouvelleQte * nouveauTaux;
 
       const [stockRows] = await conn.query(
-        'SELECT quantite, cmup FROM stock_devises WHERE devise = ?', ['USDT']
+        'SELECT quantite, cmup FROM stock WHERE devise = ?', ['USDT']
       );
       const stockActuel = parseFloat(stockRows[0]?.quantite || 0);
       const cmupActuel  = parseFloat(stockRows[0]?.cmup || 0);
@@ -270,7 +326,7 @@ router.put('/:id', asyncHandler(async (req, res) => {
         : 0;
 
       await conn.query(
-        'UPDATE stock_devises SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
+        'UPDATE stock SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
         [deltaQte, Math.max(0, nouveauCmup), 'USDT']
       );
       await conn.query(
@@ -313,7 +369,7 @@ async function handleAchat(data, user) {
     }
 
     const [stockRows] = await conn.query(
-      'SELECT quantite, cmup FROM stock_devises WHERE devise = ?', ['USDT']
+      'SELECT quantite, cmup FROM stock WHERE devise = ?', ['USDT']
     );
     const stockActuel = stockRows.length ? parseFloat(stockRows[0].quantite) : 0;
     const cmupActuel  = stockRows.length ? parseFloat(stockRows[0].cmup)     : 0;
@@ -324,24 +380,30 @@ async function handleAchat(data, user) {
 
     const txId = `TX_${Date.now()}`;
 
+    // Statut : porteur → committed immédiat; associé → assoc_pending (attente validation porteur)
+    const isPorteurUser = user.role === 'porteur';
+    const achatStatut   = isPorteurUser ? 'committed' : 'assoc_pending';
+
     await conn.query(`
       INSERT INTO transactions
         (id, user_id, type, devise, quantite, taux_achat_unitaire,
          prix_achat_total, use_caisse, ancien_cmup, nouveau_cmup, fournisseur, statut)
-      VALUES (?, ?, 'achat', 'USDT', ?, ?, ?, ?, ?, ?, ?, 'committed')`,
+      VALUES (?, ?, 'achat', 'USDT', ?, ?, ?, ?, ?, ?, ?, ?)`,
       [txId, user.id, qte, taux, prixTotal, use_caisse ? 1 : 0,
-       cmupActuel, nouveauCmup, fournisseur || null]
+       cmupActuel, nouveauCmup, fournisseur || null, achatStatut]
     );
 
-    await conn.query(
-      'UPDATE stock_devises SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
-      [qte, nouveauCmup, 'USDT']
-    );
-
-    await conn.query(
-      'UPDATE comptes SET montant = montant - ? WHERE type_compte = ?',
-      [prixTotal, source]
-    );
+    // Mettre à jour le stock et débiter le compte seulement si committed (porteur)
+    if (isPorteurUser) {
+      await conn.query(
+        'UPDATE stock SET quantite = quantite + ?, cmup = ? WHERE devise = ?',
+        [qte, nouveauCmup, 'USDT']
+      );
+      await conn.query(
+        'UPDATE comptes SET montant = montant - ? WHERE type_compte = ?',
+        [prixTotal, source]
+      );
+    }
 
     await conn.query(
       "INSERT INTO logs (id, date_heure, type_evenement, description, user_id) VALUES (?, NOW(), 'achat', ?, ?)",
@@ -350,9 +412,10 @@ async function handleAchat(data, user) {
 
     return {
       success: true,
-      message: 'Achat enregistré',
+      message: achatStatut === 'committed' ? 'Achat enregistré' : 'Achat soumis — en attente de validation',
       transaction_id: txId,
-      nouveau_cmup: nouveauCmup,
+      statut: achatStatut,
+      nouveau_cmup: isPorteurUser ? nouveauCmup : null,
     };
   });
 }
@@ -375,7 +438,7 @@ async function handleVente(data, user) {
 
   return await dbTransaction(async (conn) => {
     const [stockRows] = await conn.query(
-      'SELECT quantite, cmup FROM stock_devises WHERE devise = ?', ['USDT']
+      'SELECT quantite, cmup FROM stock WHERE devise = ?', ['USDT']
     );
     if (!stockRows.length) throw new Error('Stock USDT introuvable');
 
@@ -451,30 +514,12 @@ async function handleVente(data, user) {
 
     // Déduire le stock USDT immédiatement
     await conn.query(
-      'UPDATE stock_devises SET quantite = quantite - ? WHERE devise = ?',
+      'UPDATE stock SET quantite = quantite - ? WHERE devise = ?',
       [usdtConso, 'USDT']
     );
 
-    // Répartition visible
-    await conn.query(
-      'UPDATE repartition_profits SET total_accumule_visible = total_accumule_visible + ? WHERE role = ?',
-      [partPorteur, 'porteur']
-    );
-    await conn.query(
-      'UPDATE repartition_profits SET total_accumule_visible = total_accumule_visible + ? WHERE role = ?',
-      [partAssocie, 'associe']
-    );
-
-    // ── Créer entrée distribution_partenaires (bénéfice visible) ──
-    try {
-      await conn.query(`
-        INSERT INTO distribution_partenaires (transaction_id, role, benefice_visible, benefice_cache, pourcentage)
-        VALUES (?, 'porteur', ?, NULL, ?), (?, 'associe', ?, NULL, ?)`,
-        [txId, partPorteur, pctP, txId, partAssocie, pctA]
-      );
-    } catch (distErr) {
-      console.warn('distribution_partenaires non disponible:', distErr.message);
-    }
+    // (NOTE) Tables `distribution` / `distribution_partenaires` supprimées :
+    // les parts porteur/associé sont déjà persistées dans `transactions`.
 
     // ── Gestion fournisseur USDT (paiement) ──
     if (id_fournisseur && mode_paiement === 'usdt') {
@@ -499,7 +544,7 @@ async function handleVente(data, user) {
           }
         }
       } catch (fournErr) {
-        console.warn('comptes_fournisseurs non disponible:', fournErr.message);
+        console.warn('fournisseurs non disponible:', fournErr.message);
       }
     }
 
@@ -520,27 +565,8 @@ async function handleVente(data, user) {
         WHERE id = ?`,
         [valVenteC, benC, partPC, partAC, txId]
       );
-      await conn.query(
-        'UPDATE repartition_profits SET total_accumule_cache = total_accumule_cache + ? WHERE role = ?',
-        [partPC, 'porteur']
-      );
-      await conn.query(
-        'UPDATE repartition_profits SET total_accumule_cache = total_accumule_cache + ? WHERE role = ?',
-        [partAC, 'associe']
-      );
-      // Mettre à jour distribution_partenaires avec bénéfice caché
-      try {
-        await conn.query(
-          `UPDATE distribution_partenaires SET benefice_cache = ? WHERE transaction_id = ? AND role = 'porteur'`,
-          [partPC, txId]
-        );
-        await conn.query(
-          `UPDATE distribution_partenaires SET benefice_cache = ? WHERE transaction_id = ? AND role = 'associe'`,
-          [partAC, txId]
-        );
-      } catch (distErr) {
-        console.warn('distribution_partenaires mise à jour:', distErr.message);
-      }
+      // Tables distribution / distribution_partenaires supprimées :
+      // les parts cachées sont stockées dans `transactions` ci-dessus.
     }
 
     await conn.query(
