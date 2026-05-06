@@ -6,7 +6,7 @@ import {
   apiValiderAssoc, apiValiderTransaction,
   // v5.6.0+ nouveaux endpoints
   apiGetClients, apiCreateClient, apiUpdateClient, apiDeleteClient, apiGetClientExtrait, apiPayClient,
-  apiGetFournisseurs, apiCreateFournisseur, apiUpdateFournisseur, apiDeleteFournisseur, apiFournisseurPayment, apiGetFournisseurExtrait, apiPayFournisseur,
+  apiGetFournisseurs, apiCreateFournisseur, apiUpdateFournisseur, apiDeleteFournisseur, apiFournisseurPayment, apiGetFournisseurExtrait,
   apiGetDevises, apiCreateDevise, apiUpdateDevise, apiDeleteDevise,
   apiGetDistributionDetails, apiToggleDistribution,
 } from './api.js';
@@ -3361,15 +3361,23 @@ const PhoneCounter = ({ value }) => {
 
 // ─────────────────────────────────────────────────────────────
 
-const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDeleteClient, onUpdateClient, apiGetClientExtrait, apiPayClient }) => {
+const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDeleteClient, onUpdateClient, onPaymentClient, apiGetClientExtrait }) => {
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [extraitData, setExtraitData] = useState(null);
   const [extraitClient, setExtraitClient] = useState(null);
+  const [extraitDateDebut, setExtraitDateDebut] = useState('');
+  const [extraitDateFin, setExtraitDateFin] = useState('');
   const [editClient, setEditClient] = useState(null);
-  const [paymentTx, setPaymentTx] = useState(null);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMode, setPaymentMode] = useState('XAF');
+  // ── Modal "Payer" (au niveau du client, pas d'une transaction précise) ──
+  // Le paiement crée une transaction de type 'payement_client' dans la BD :
+  //   montant         = montant à payer
+  //   montant_paye    = ce que le client a effectivement payé
+  //   reste           = montant - montant_paye  (calculé, non stocké côté UI)
+  const [payClient, setPayClient] = useState(null);
+  const [payMontantAPayer, setPayMontantAPayer] = useState('');
+  const [payMontantPaye, setPayMontantPaye] = useState('');
+  const [payMode, setPayMode] = useState('xaf');
 
   // Form fields
   const emptyForm = { nom:'', prenom:'', telephone:'', adresse:'', ville:'' };
@@ -3393,23 +3401,41 @@ const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDelete
     if (!window.confirm('Supprimer ce client ?')) return;
     try { await onDeleteClient(id); toast.success('Supprimé'); } catch(e) { toast.error(e.message); }
   };
-  const handleExtrait = async (client) => {
+  const handleExtrait = async (client, dateDebut=null, dateFin=null) => {
     try {
-      const d = await apiGetClientExtrait(client.id);
+      const d = await apiGetClientExtrait(client.id, dateDebut, dateFin);
       setExtraitData(d); setExtraitClient(client);
     } catch(e) { toast.error('Extrait indisponible : ' + e.message); }
   };
-  const handlePayment = async () => {
-    if (!paymentTx || !paymentAmount) { toast.error('Montant requis'); return; }
+  const reloadExtrait = async () => {
+    if (!extraitClient) return;
+    try {
+      const d = await apiGetClientExtrait(extraitClient.id, extraitDateDebut || null, extraitDateFin || null);
+      setExtraitData(d);
+    } catch(e) { toast.error(e.message); }
+  };
+  // Ouvrir la modal "Payer" pour un client donné
+  const openPayClient = (c) => {
+    setPayClient(c);
+    setPayMontantAPayer('');
+    setPayMontantPaye('');
+    setPayMode('xaf');
+  };
+  const handlePayClient = async () => {
+    if (!payClient) return;
+    const aPay = parseFloat(payMontantAPayer || 0);
+    const paye = parseFloat(payMontantPaye || 0);
+    if (isNaN(aPay) || aPay < 0) { toast.error('Montant à payer invalide'); return; }
+    if (isNaN(paye) || paye < 0) { toast.error('Montant payé invalide'); return; }
+    if (aPay === 0 && paye === 0) { toast.error('Saisissez au moins un montant'); return; }
     try {
       setLoading(true);
-      await apiPayClient(extraitClient.id, paymentTx.id, parseFloat(paymentAmount), paymentMode);
-      toast.success('Paiement enregistré ✓');
-      setPaymentTx(null);
-      setPaymentAmount('');
-      // Recharger l'extrait
-      const d = await apiGetClientExtrait(extraitClient.id);
-      setExtraitData(d);
+      await onPaymentClient(payClient.id, aPay, paye, payMode);
+      toast.success('Paiement client enregistré ✓');
+      setPayClient(null);
+      setPayMontantAPayer(''); setPayMontantPaye('');
+      // Recharger l'extrait si ouvert sur ce client
+      if (extraitClient && extraitClient.id === payClient.id) await reloadExtrait();
     } catch(e) { toast.error(e.message); }
     finally { setLoading(false); }
   };
@@ -3470,49 +3496,46 @@ const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDelete
           <div style={{overflowX:'auto'}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
               <thead><tr style={{borderBottom:`2px solid ${tk.border}`}}>
-                {['N°','Nom & Prénom','Téléphone','Adresse / Ville','Dette','Remboursé','Reste','Actions'].map((h,i)=>(
+                {['N°','Nom & Prénom','Téléphone','Adresse / Ville','Montant à payer','Montant payé','Reste','Actions'].map((h,i)=>(
                   <th key={i} style={{padding:'8px 12px',textAlign:i>=4?'right':'left',color:tk.faint,fontSize:10,fontWeight:700,letterSpacing:0.5}}>{h.toUpperCase()}</th>
                 ))}
               </tr></thead>
               <tbody>
-                {clients.map((c,i)=>(
-                  <tr key={c.id} style={{borderBottom:i<clients.length-1?`1px solid ${tk.border}`:'none'}}>
-                    <td style={{padding:'10px 12px',color:tk.faint,fontSize:10,fontWeight:600,whiteSpace:'nowrap'}}>{fmtNum(c.id)}</td>
-                    <td style={{padding:'10px 12px'}}>
-                      <div style={{fontWeight:700,color:tk.ink}}>{c.nom}{c.prenom?` ${c.prenom}`:''}</div>
-                      <div style={{fontSize:10,color:tk.faint}}>{c.nb_transactions||0} transaction{c.nb_transactions!==1?'s':''}</div>
-                    </td>
-                    <td style={{padding:'10px 12px',color:tk.sub,whiteSpace:'nowrap'}}>{c.telephone||c.numero||'—'}</td>
-                    <td style={{padding:'10px 12px',color:tk.faint,fontSize:11}}>{c.adresse||c.ville||'—'}</td>
-                    {/** Dette / Remboursement / Reste columns */}
-                    {(() => {
-                      const sol = parseFloat(c.solde||0);
-                      const dette = Math.max(0, -sol);
-                      const remb = Math.max(0, sol);
-                      const reste = Math.max(0, dette - remb);
-                      return (
-                        <>
-                          <td style={{padding:'10px 12px',textAlign:'right'}}>
-                            {dette>0? (<span style={{fontWeight:700,color:'#EF4444'}}>{Math.round(dette).toLocaleString('fr-FR')} XAF</span>) : <span style={{color:tk.faint}}>—</span>}
-                          </td>
-                          <td style={{padding:'10px 12px',textAlign:'right'}}>
-                            {remb>0? (<span style={{fontWeight:700,color:'#22C55E'}}>{Math.round(remb).toLocaleString('fr-FR')} XAF</span>) : <span style={{color:tk.faint}}>—</span>}
-                          </td>
-                          <td style={{padding:'10px 12px',textAlign:'right'}}>
-                            {reste>0? (<span style={{fontWeight:700,color:'#F59E0B'}}>{Math.round(reste).toLocaleString('fr-FR')} XAF</span>) : <span style={{color:tk.faint}}>—</span>}
-                          </td>
-                        </>
-                      );
-                    })()}
-                    <td style={{padding:'10px 12px',textAlign:'right'}}>
-                      <div style={{display:'flex',gap:6,justifyContent:'flex-end'}}>
-                        <button onClick={()=>handleExtrait(c)} title="Extrait de compte" style={{background:'none',border:'none',cursor:'pointer',color:tk.accent}}><FileText size={14}/></button>
-                        <button onClick={()=>openEdit(c)} title="Modifier" style={{background:'none',border:'none',cursor:'pointer',color:'#F59E0B'}}><Edit2 size={14}/></button>
-                        <button onClick={()=>handleDelete(c.id)} title="Supprimer" style={{background:'none',border:'none',cursor:'pointer',color:'#EF4444'}}><Trash2 size={14}/></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {clients.map((c,i)=>{
+                  // Agrégats fournis par le backend (SUM sur transactions WHERE type='payement_client')
+                  const totalAPayer = parseFloat(c.total_a_payer||0);
+                  const totalPaye   = parseFloat(c.total_paye||0);
+                  // Le reste est calculé côté UI (non stocké en BD)
+                  const reste       = Math.max(0, totalAPayer - totalPaye);
+                  return (
+                    <tr key={c.id} style={{borderBottom:i<clients.length-1?`1px solid ${tk.border}`:'none'}}>
+                      <td style={{padding:'10px 12px',color:tk.faint,fontSize:10,fontWeight:600,whiteSpace:'nowrap'}}>{fmtNum(c.id)}</td>
+                      <td style={{padding:'10px 12px'}}>
+                        <div style={{fontWeight:700,color:tk.ink}}>{c.nom}{c.prenom?` ${c.prenom}`:''}</div>
+                        <div style={{fontSize:10,color:tk.faint}}>{c.nb_paiements||0} paiement{(c.nb_paiements||0)!==1?'s':''} · {c.nb_ventes||0} vente{(c.nb_ventes||0)!==1?'s':''}</div>
+                      </td>
+                      <td style={{padding:'10px 12px',color:tk.sub,whiteSpace:'nowrap'}}>{c.telephone||c.numero||'—'}</td>
+                      <td style={{padding:'10px 12px',color:tk.faint,fontSize:11}}>{c.adresse||c.ville||'—'}</td>
+                      <td style={{padding:'10px 12px',textAlign:'right'}}>
+                        {totalAPayer>0 ? (<span style={{fontWeight:700,color:'#3B82F6'}}>{Math.round(totalAPayer).toLocaleString('fr-FR')} XAF</span>) : <span style={{color:tk.faint}}>—</span>}
+                      </td>
+                      <td style={{padding:'10px 12px',textAlign:'right'}}>
+                        {totalPaye>0 ? (<span style={{fontWeight:700,color:'#22C55E'}}>{Math.round(totalPaye).toLocaleString('fr-FR')} XAF</span>) : <span style={{color:tk.faint}}>—</span>}
+                      </td>
+                      <td style={{padding:'10px 12px',textAlign:'right'}}>
+                        {reste>0 ? (<span style={{fontWeight:700,color:'#F59E0B'}}>{Math.round(reste).toLocaleString('fr-FR')} XAF</span>) : (totalAPayer>0 ? <span style={{fontWeight:700,color:'#22C55E'}}>✓ Soldé</span> : <span style={{color:tk.faint}}>—</span>)}
+                      </td>
+                      <td style={{padding:'10px 12px',textAlign:'right'}}>
+                        <div style={{display:'flex',gap:6,justifyContent:'flex-end',alignItems:'center'}}>
+                          <button onClick={()=>openPayClient(c)} style={{padding:'5px 12px',borderRadius:6,border:`1px solid ${tk.accent}`,background:'none',color:tk.accent,cursor:'pointer',fontSize:10,fontWeight:700}}>Payer</button>
+                          <button onClick={()=>{setExtraitDateDebut('');setExtraitDateFin('');handleExtrait(c);}} title="Extrait de compte" style={{background:'none',border:'none',cursor:'pointer',color:tk.accent}}><FileText size={14}/></button>
+                          <button onClick={()=>openEdit(c)} title="Modifier" style={{background:'none',border:'none',cursor:'pointer',color:'#F59E0B'}}><Edit2 size={14}/></button>
+                          <button onClick={()=>handleDelete(c.id)} title="Supprimer" style={{background:'none',border:'none',cursor:'pointer',color:'#EF4444'}}><Trash2 size={14}/></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -3546,128 +3569,193 @@ const ClientsPageInline = ({ clients, dark, langue, tk, onCreateClient, onDelete
         </div>
       )}
 
-      {/* Modal Extrait */}
-      {extraitData && extraitClient && (
+      {/* Modal Extrait — extrait de compte client (type='payement_client') */}
+      {extraitData && extraitClient && (() => {
+        const totals = extraitData.totals || {};
+        const totalAPayer = parseFloat(totals.total_a_payer || 0);
+        const totalPaye   = parseFloat(totals.total_paye   || 0);
+        const totalReste  = Math.max(0, totalAPayer - totalPaye);
+        const daily       = extraitData.daily || [];
+        const txs         = extraitData.transactions || [];
+        return (
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
-          <div style={{background:tk.card,borderRadius:16,padding:24,width:'92%',maxWidth:620,maxHeight:'85vh',overflow:'auto',border:`1px solid ${tk.border}`}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:'92%',maxWidth:760,maxHeight:'88vh',overflow:'auto',border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:14}}>
               <div>
                 <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>{extraitClient.nom}{extraitClient.prenom?` ${extraitClient.prenom}`:''}</h3>
-                <div style={{fontSize:11,color:tk.faint}}>{fmtNum(extraitClient.id)} · Extrait de compte</div>
+                <div style={{fontSize:11,color:tk.faint}}>{fmtNum(extraitClient.id)} · Extrait de compte (paiements client)</div>
               </div>
-              <button onClick={()=>setExtraitData(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+              <button onClick={()=>{setExtraitData(null);setExtraitClient(null);}} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
             </div>
-            {/* Récap */}
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
-              <div style={{background:dark?'rgba(34,197,94,0.1)':'rgba(34,197,94,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(34,197,94,0.2)'}}>
-                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>TOTAL VENTES</div>
-                <div style={{fontSize:15,fontWeight:800,color:'#22C55E'}}>{Math.round(extraitData.total_ventes||0).toLocaleString('fr-FR')} XAF</div>
-              </div>
-              <div style={{background:dark?'rgba(212,175,55,0.1)':'rgba(212,175,55,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(212,175,55,0.2)'}}>
-                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>SOLDE COMPTE</div>
-                <div style={{fontSize:15,fontWeight:800,color:'#D4AF37'}}>{Math.round(extraitData.solde||extraitClient.solde||0).toLocaleString('fr-FR')} XAF</div>
-              </div>
-            </div>
-            <div style={{fontSize:11,color:tk.sub,marginBottom:10}}>{(extraitData.transactions||[]).length} transaction(s) · Restant: <span style={{fontWeight:700,color:'#F59E0B'}}>{Math.round(extraitData.totals?.total_montant_reste||0).toLocaleString('fr-FR')} XAF</span></div>
-            {(extraitData.transactions||[]).length===0?(
-              <div style={{textAlign:'center',padding:'20px 0',color:tk.faint,fontSize:12}}>Aucune transaction</div>
-            ):(extraitData.transactions||[]).map((tx,i)=>{
-              const montantTotal = parseFloat(tx.montant||0);
-              const montantPaye = parseFloat(tx.montant_paye||0);
-              const montantReste = parseFloat(tx.montant_reste||montantTotal - montantPaye);
-              return (
-                <div key={i} style={{display:'grid',gridTemplateColumns:'90px 1fr 80px 80px 60px',alignItems:'center',gap:8,padding:'8px 0',borderBottom:`1px solid ${tk.border}`,fontSize:11}}>
-                  <span style={{color:tk.faint}}>{tx.date?new Date(tx.date).toLocaleDateString('fr-FR'):'—'}</span>
-                  <div>
-                    <span style={{color:tk.ink,fontWeight:600,textTransform:'capitalize'}}>{tx.type}</span>
-                    <div style={{fontSize:9,color:tk.faint}}>{tx.payment_status||'—'}</div>
-                  </div>
-                  <span style={{fontWeight:700,color:tk.accent,textAlign:'right'}}>{Math.round(montantTotal).toLocaleString('fr-FR')}</span>
-                  <span style={{fontWeight:600,color:'#22C55E',textAlign:'right'}}>{Math.round(montantPaye).toLocaleString('fr-FR')}</span>
-                  <div style={{display:'flex',gap:4,justifyContent:'flex-end'}}>
-                    {montantReste > 0 && (
-                      <>
-                        <span style={{fontWeight:600,color:'#F59E0B',textAlign:'right'}}>{Math.round(montantReste).toLocaleString('fr-FR')}</span>
-                        <button onClick={()=>{setPaymentTx(tx);setPaymentAmount('');setPaymentMode('XAF');}} title="Payer" style={{background:'none',border:'none',cursor:'pointer',color:tk.accent,fontSize:11,fontWeight:600}}>Payer</button>
-                      </>
-                    )}
-                    {montantReste <= 0 && <span style={{color:'#22C55E',fontSize:9}}>✓</span>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
-      {/* Modal Paiement Client */}
-      {paymentTx && extraitClient && (
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
-          <div style={{background:tk.card,borderRadius:16,padding:24,width:380,border:`1px solid ${tk.border}`}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
-              <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Enregistrer un paiement</h3>
-              <button onClick={()=>setPaymentTx(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
-            </div>
-            <div style={{marginBottom:14,fontSize:12,color:tk.sub}}>
-              <div>Client: <span style={{fontWeight:700,color:tk.ink}}>{extraitClient.nom}</span></div>
-              <div>Transaction: <span style={{fontWeight:700,color:tk.accent}}>{paymentTx.type}</span> — {new Date(paymentTx.date).toLocaleDateString('fr-FR')}</div>
-              <div style={{marginTop:8}}>
-                <span style={{color:tk.faint}}>Montant:</span> <span style={{fontWeight:700,fontSize:13,color:tk.accent}}>{Math.round(parseFloat(paymentTx.montant||0)).toLocaleString('fr-FR')} XAF</span>
+            {/* Filtre par date */}
+            <div style={{display:'flex',gap:8,alignItems:'flex-end',marginBottom:14,flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>DU</div>
+                <input type="date" value={extraitDateDebut} onChange={e=>setExtraitDateDebut(e.target.value)} style={{...inputStyle,width:160}}/>
               </div>
               <div>
-                <span style={{color:tk.faint}}>Reste à payer:</span> <span style={{fontWeight:700,fontSize:13,color:'#F59E0B'}}>{Math.round(parseFloat(paymentTx.montant_reste||0)).toLocaleString('fr-FR')} XAF</span>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>AU</div>
+                <input type="date" value={extraitDateFin} onChange={e=>setExtraitDateFin(e.target.value)} style={{...inputStyle,width:160}}/>
+              </div>
+              <button onClick={reloadExtrait} style={{padding:'9px 14px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontSize:11,fontWeight:700}}>Filtrer</button>
+              <button onClick={()=>{setExtraitDateDebut('');setExtraitDateFin('');handleExtrait(extraitClient);}} style={{padding:'9px 14px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:11}}>Tout voir</button>
+            </div>
+
+            {/* Récap totaux sur la période */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
+              <div style={{background:dark?'rgba(59,130,246,0.1)':'rgba(59,130,246,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(59,130,246,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>MONTANT À PAYER</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#3B82F6'}}>{Math.round(totalAPayer).toLocaleString('fr-FR')} XAF</div>
+              </div>
+              <div style={{background:dark?'rgba(34,197,94,0.1)':'rgba(34,197,94,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(34,197,94,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>MONTANT PAYÉ</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#22C55E'}}>{Math.round(totalPaye).toLocaleString('fr-FR')} XAF</div>
+              </div>
+              <div style={{background:dark?'rgba(245,158,11,0.1)':'rgba(245,158,11,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(245,158,11,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>RESTE</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#F59E0B'}}>{Math.round(totalReste).toLocaleString('fr-FR')} XAF</div>
               </div>
             </div>
-            <div style={{marginBottom:12}}>
-              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MONTANT À PAYER *</div>
-              <input 
-                type="number" 
-                value={paymentAmount} 
-                onChange={e=>setPaymentAmount(e.target.value)} 
-                placeholder="0"
-                style={{...inputStyle,fontSize:14,fontWeight:600}}
-              />
+
+            {/* Ventilation par jour */}
+            <div style={{marginBottom:18}}>
+              <div style={{fontSize:11,fontWeight:700,color:tk.ink,marginBottom:8,letterSpacing:0.5}}>VENTILATION PAR JOUR</div>
+              {daily.length === 0 ? (
+                <div style={{textAlign:'center',padding:'14px 0',color:tk.faint,fontSize:12}}>Aucun paiement sur la période</div>
+              ) : (
+                <div style={{overflowX:'auto'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                    <thead><tr style={{borderBottom:`1px solid ${tk.border}`}}>
+                      {['Date','Nb','À payer','Payé','Reste'].map((h,i)=>(
+                        <th key={i} style={{padding:'6px 10px',textAlign:i===0?'left':'right',color:tk.faint,fontSize:9,fontWeight:700,letterSpacing:0.5}}>{h.toUpperCase()}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {daily.map((d,idx)=>{
+                        const aPay = parseFloat(d.total_a_payer||0);
+                        const paye = parseFloat(d.total_paye||0);
+                        const r    = Math.max(0, aPay - paye);
+                        return (
+                          <tr key={idx} style={{borderBottom:`1px solid ${tk.border}`}}>
+                            <td style={{padding:'7px 10px',color:tk.ink,fontWeight:600}}>{d.jour ? new Date(d.jour).toLocaleDateString('fr-FR') : '—'}</td>
+                            <td style={{padding:'7px 10px',textAlign:'right',color:tk.sub}}>{d.nb_paiements||0}</td>
+                            <td style={{padding:'7px 10px',textAlign:'right',fontWeight:700,color:'#3B82F6'}}>{Math.round(aPay).toLocaleString('fr-FR')}</td>
+                            <td style={{padding:'7px 10px',textAlign:'right',fontWeight:700,color:'#22C55E'}}>{Math.round(paye).toLocaleString('fr-FR')}</td>
+                            <td style={{padding:'7px 10px',textAlign:'right',fontWeight:700,color:r>0?'#F59E0B':'#22C55E'}}>{Math.round(r).toLocaleString('fr-FR')}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
-            <div style={{marginBottom:12}}>
-              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MODE DE PAIEMENT</div>
-              <select 
-                value={paymentMode} 
-                onChange={e=>setPaymentMode(e.target.value)}
-                style={{...inputStyle}}
-              >
-                <option value="XAF">XAF (Espèces)</option>
-                <option value="USDT">USDT (Crypto)</option>
-              </select>
-            </div>
-            <div style={{display:'flex',gap:8}}>
-              <button onClick={handlePayment} disabled={loading || !paymentAmount} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontWeight:700,fontSize:12,opacity:loading||!paymentAmount?0.6:1}}>{loading?'…':'Enregistrer'}</button>
-              <button onClick={()=>setPaymentTx(null)} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:12}}>Annuler</button>
+
+            {/* Détail des paiements */}
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:tk.ink,marginBottom:8,letterSpacing:0.5}}>DÉTAIL DES PAIEMENTS ({txs.length})</div>
+              {txs.length === 0 ? (
+                <div style={{textAlign:'center',padding:'14px 0',color:tk.faint,fontSize:12}}>Aucun paiement</div>
+              ) : txs.map((tx,i)=>{
+                const aPay = parseFloat(tx.montant_a_payer||tx.montant||0);
+                const paye = parseFloat(tx.montant_paye||0);
+                const r    = Math.max(0, aPay - paye);
+                return (
+                  <div key={i} style={{display:'grid',gridTemplateColumns:'90px 1fr 90px 90px 90px 50px',alignItems:'center',gap:8,padding:'8px 0',borderBottom:`1px solid ${tk.border}`,fontSize:11}}>
+                    <span style={{color:tk.faint}}>{tx.date ? new Date(tx.date).toLocaleDateString('fr-FR') : '—'}</span>
+                    <div>
+                      <span style={{color:tk.ink,fontWeight:600,fontSize:10,textTransform:'uppercase'}}>{tx.mode_paiement||'XAF'}</span>
+                      {tx.notes && <div style={{fontSize:9,color:tk.faint}}>{tx.notes}</div>}
+                    </div>
+                    <span style={{fontWeight:700,color:'#3B82F6',textAlign:'right'}}>{Math.round(aPay).toLocaleString('fr-FR')}</span>
+                    <span style={{fontWeight:700,color:'#22C55E',textAlign:'right'}}>{Math.round(paye).toLocaleString('fr-FR')}</span>
+                    <span style={{fontWeight:700,color:r>0?'#F59E0B':'#22C55E',textAlign:'right'}}>{Math.round(r).toLocaleString('fr-FR')}</span>
+                    <span style={{textAlign:'right',color:r<=0?'#22C55E':tk.faint,fontSize:11}}>{r<=0?'✓':'—'}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
+
+      {/* Modal "Payer" — niveau client (crée une transaction payement_client) */}
+      {payClient && (() => {
+        const aPay = parseFloat(payMontantAPayer || 0);
+        const paye = parseFloat(payMontantPaye || 0);
+        const reste = Math.max(0, (isNaN(aPay)?0:aPay) - (isNaN(paye)?0:paye));
+        return (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:420,border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:14}}>
+              <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Paiement client — {payClient.nom}</h3>
+              <button onClick={()=>setPayClient(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+            </div>
+
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MONTANT À PAYER (XAF)</div>
+              <input type="text" inputMode="decimal" value={payMontantAPayer}
+                onChange={e=>setPayMontantAPayer(e.target.value.replace(/[^0-9.]/g,''))}
+                placeholder="ex: 50000" style={{...inputStyle,fontSize:14,fontWeight:600}}/>
+              <div style={{fontSize:9,color:tk.faint,marginTop:3}}>Total que le client doit payer pour cette opération.</div>
+            </div>
+
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MONTANT PAYÉ (XAF)</div>
+              <input type="text" inputMode="decimal" value={payMontantPaye}
+                onChange={e=>setPayMontantPaye(e.target.value.replace(/[^0-9.]/g,''))}
+                placeholder="ex: 30000" style={{...inputStyle,fontSize:14,fontWeight:600}}/>
+              <div style={{fontSize:9,color:tk.faint,marginTop:3}}>Ce que le client a effectivement réglé maintenant.</div>
+            </div>
+
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MODE</div>
+              <div style={{display:'flex',gap:12}}>
+                {['xaf','usdt'].map(m=>(
+                  <label key={m} style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12,color:tk.ink}}>
+                    <input type="radio" checked={payMode===m} onChange={()=>setPayMode(m)} style={{accentColor:tk.accent}}/> {m.toUpperCase()}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div style={{padding:'10px 12px',background:dark?'rgba(245,158,11,0.08)':'rgba(245,158,11,0.06)',borderRadius:8,marginBottom:14,border:'1px solid rgba(245,158,11,0.25)'}}>
+              <div style={{fontSize:10,color:tk.faint,marginBottom:2}}>RESTE (calculé automatiquement)</div>
+              <div style={{fontSize:15,fontWeight:800,color:'#F59E0B'}}>{Math.round(reste).toLocaleString('fr-FR')} XAF</div>
+            </div>
+
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={handlePayClient} disabled={loading} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:'#22C55E',color:'#fff',cursor:'pointer',fontWeight:700,fontSize:12,opacity:loading?0.6:1}}>{loading?'…':'Confirmer paiement'}</button>
+              <button onClick={()=>setPayClient(null)} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:12}}>Annuler</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
     </div>
   );
 };
 
 // ─────────────────────────────────────────────────────────────
 
-const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, cmup=0, onCreateFournisseur, onDeleteFournisseur, onUpdateFournisseur, onPaymentFournisseur, apiGetFournisseurExtrait, apiPayFournisseur }) => {
+const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, cmup=0, onCreateFournisseur, onDeleteFournisseur, onUpdateFournisseur, onPaymentFournisseur, apiGetFournisseurExtrait }) => {
   const [showForm, setShowForm] = useState(false);
   const [showPay, setShowPay] = useState(null);
   const [editFourn, setEditFourn] = useState(null);
-  const [showUsdtEq, setShowUsdtEq] = useState({}); // toggle USDT equivalent per fournisseur
   const [loading, setLoading] = useState(false);
   const [extraitData, setExtraitData] = useState(null);
   const [extraitFournisseur, setExtraitFournisseur] = useState(null);
-  const [paymentTx, setPaymentTx] = useState(null);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMode, setPaymentMode] = useState('XAF');
+  const [extraitDateDebut, setExtraitDateDebut] = useState('');
+  const [extraitDateFin, setExtraitDateFin] = useState('');
 
   const emptyForm = { nom:'', prenom:'', telephone:'', adresse:'', ville:'' };
   const [form, setForm] = useState(emptyForm);
   const [editForm, setEditForm] = useState(emptyForm);
-  const [payMode, setPayMode] = useState('xaf'); const [payMontant, setPayMontant] = useState('');
+  const [payMode, setPayMode] = useState('xaf');
+  const [payMontantAPayer, setPayMontantAPayer] = useState('');
+  const [payMontantPaye, setPayMontantPaye] = useState('');
 
   const card = { background:tk.card, borderRadius:14, border:`1px solid ${tk.border}`, padding:'18px 20px', boxShadow:dark?'0 2px 12px rgba(0,0,0,0.25)':'0 2px 8px rgba(10,22,40,0.06)' };
   const inputStyle = { width:'100%', padding:'9px 12px', borderRadius:8, border:`1px solid ${tk.border}`, background:tk.cardB, color:tk.ink, fontSize:12, outline:'none', boxSizing:'border-box' };
@@ -3687,35 +3775,38 @@ const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, cmup=0, onCrea
     try { await onDeleteFournisseur(id); toast.success('Supprimé'); } catch(e) { toast.error(e.message); }
   };
   const handlePay = async () => {
-    if (!payMontant) { toast.error('Montant requis'); return; }
-    try { await onPaymentFournisseur(showPay, payMode, parseFloat(payMontant)); toast.success(`Paiement ${payMode.toUpperCase()} enregistré ✓`); setShowPay(null); setPayMontant(''); }
-    catch(e) { toast.error(e.message); }
+    const aPay = parseFloat(payMontantAPayer || 0);
+    const paye = parseFloat(payMontantPaye   || 0);
+    if (isNaN(aPay) || aPay < 0) { toast.error('Montant à payer invalide'); return; }
+    if (isNaN(paye) || paye < 0) { toast.error('Montant payé invalide'); return; }
+    if (aPay === 0 && paye === 0) { toast.error('Saisissez au moins un montant'); return; }
+    try {
+      setLoading(true);
+      await onPaymentFournisseur(showPay, payMode, aPay, paye);
+      toast.success(`Paiement ${payMode.toUpperCase()} enregistré ✓`);
+      setShowPay(null);
+      setPayMontantAPayer(''); setPayMontantPaye('');
+    } catch(e) { toast.error(e.message); }
+    finally { setLoading(false); }
   };
   const openEdit = (f) => {
     setEditFourn(f);
     const parts = (f.adresse||'').split(',');
     setEditForm({ nom:f.nom||'', prenom:f.prenom||'', telephone:f.telephone||f.numero||'', adresse:parts[0]?.trim()||'', ville:parts[1]?.trim()||f.ville||'' });
   };
-  const handleExtrait = async (f) => {
+  const handleExtrait = async (f, dateDebut=null, dateFin=null) => {
     try {
-      const d = await apiGetFournisseurExtrait(f.id);
+      const d = await apiGetFournisseurExtrait(f.id, dateDebut, dateFin);
       setExtraitData(d);
       setExtraitFournisseur(f);
     } catch(e) { toast.error('Extrait indisponible: '+e.message); }
   };
-  const handlePaymentFournisseur = async () => {
-    if (!paymentTx || !paymentAmount) { toast.error('Montant requis'); return; }
+  const reloadExtrait = async () => {
+    if (!extraitFournisseur) return;
     try {
-      setLoading(true);
-      await apiPayFournisseur(extraitFournisseur.id, paymentTx.id, parseFloat(paymentAmount), paymentMode);
-      toast.success('Paiement enregistré ✓');
-      setPaymentTx(null);
-      setPaymentAmount('');
-      // Recharger l'extrait
-      const d = await apiGetFournisseurExtrait(extraitFournisseur.id);
+      const d = await apiGetFournisseurExtrait(extraitFournisseur.id, extraitDateDebut || null, extraitDateFin || null);
       setExtraitData(d);
     } catch(e) { toast.error(e.message); }
-    finally { setLoading(false); }
   };
   const handleUpdate = async () => {
     if (!editForm.nom.trim()) { toast.error('Nom requis'); return; }
@@ -3886,37 +3977,39 @@ const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, cmup=0, onCrea
         </div>
       )}
 
-      {/* Modal Paiement */}
+      {/* Modal Paiement Fournisseur — crée une transaction payement_fournisseur */}
       {showPay && (()=>{
         const f = fournisseurs.find(x=>x.id===showPay);
-        const detteXaf = parseFloat(f?.solde_xaf||0)<0?Math.abs(parseFloat(f?.solde_xaf||0)):0;
-        const detteUsdt = parseFloat(f?.dette_usdt||0);
-        const remboXaf = parseFloat(f?.solde_xaf||0)>0?parseFloat(f?.solde_xaf||0):0;
-        const remboUsdt = parseFloat(f?.solde_usdt||0)>0?parseFloat(f?.solde_usdt||0):0;
-        const resteXaf = Math.max(0,detteXaf-remboXaf);
-        const resteUsdt = Math.max(0,detteUsdt-remboUsdt);
+        const totalAPayer = parseFloat(f?.total_a_payer||0);
+        const totalPaye   = parseFloat(f?.total_paye||0);
+        const totalReste  = Math.max(0, totalAPayer - totalPaye);
+        const aPay = parseFloat(payMontantAPayer || 0);
+        const paye = parseFloat(payMontantPaye   || 0);
+        const resteCalc = Math.max(0, (isNaN(aPay)?0:aPay) - (isNaN(paye)?0:paye));
         return (
           <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
-            <div style={{background:tk.card,borderRadius:16,padding:24,width:380,border:`1px solid ${tk.border}`}}>
+            <div style={{background:tk.card,borderRadius:16,padding:24,width:420,border:`1px solid ${tk.border}`}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:12}}>
-                <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Paiement — {f?.nom}</h3>
-                <button onClick={()=>{setShowPay(null);setPayMontant('');}} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+                <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Paiement fournisseur — {f?.nom}</h3>
+                <button onClick={()=>{setShowPay(null);setPayMontantAPayer('');setPayMontantPaye('');}} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
               </div>
-              {/* Récap */}
+
+              {/* Récap cumulé du fournisseur (toutes périodes) */}
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
-                {[
-                  {lbl:'DETTE',xaf:detteXaf,usdt:detteUsdt,color:'#EF4444',bg:'rgba(239,68,68,0.08)'},
-                  {lbl:'REMBOURSÉ',xaf:remboXaf,usdt:remboUsdt,color:'#22C55E',bg:'rgba(34,197,94,0.08)'},
-                  {lbl:'RESTE',xaf:resteXaf,usdt:resteUsdt,color:'#F59E0B',bg:'rgba(245,158,11,0.08)'},
-                ].map(r=>(
-                  <div key={r.lbl} style={{background:r.bg,borderRadius:8,padding:'8px 10px'}}>
-                    <div style={{fontSize:9,color:tk.faint,marginBottom:4}}>{r.lbl}</div>
-                    {r.xaf>0&&<div style={{fontSize:10,fontWeight:700,color:r.color}}>{Math.round(r.xaf).toLocaleString('fr-FR')} XAF</div>}
-                    {r.usdt>0&&<div style={{fontSize:10,fontWeight:700,color:r.color}}>{r.usdt.toFixed(4)} USDT</div>}
-                    {r.xaf<=0&&r.usdt<=0&&<div style={{fontSize:10,color:tk.faint}}>—</div>}
-                  </div>
-                ))}
+                <div style={{background:dark?'rgba(59,130,246,0.08)':'rgba(59,130,246,0.06)',borderRadius:8,padding:'8px 10px',border:'1px solid rgba(59,130,246,0.2)'}}>
+                  <div style={{fontSize:9,color:tk.faint,marginBottom:4}}>À PAYER (cumulé)</div>
+                  <div style={{fontSize:11,fontWeight:700,color:'#3B82F6'}}>{Math.round(totalAPayer).toLocaleString('fr-FR')} XAF</div>
+                </div>
+                <div style={{background:dark?'rgba(34,197,94,0.08)':'rgba(34,197,94,0.06)',borderRadius:8,padding:'8px 10px',border:'1px solid rgba(34,197,94,0.2)'}}>
+                  <div style={{fontSize:9,color:tk.faint,marginBottom:4}}>PAYÉ (cumulé)</div>
+                  <div style={{fontSize:11,fontWeight:700,color:'#22C55E'}}>{Math.round(totalPaye).toLocaleString('fr-FR')} XAF</div>
+                </div>
+                <div style={{background:dark?'rgba(245,158,11,0.08)':'rgba(245,158,11,0.06)',borderRadius:8,padding:'8px 10px',border:'1px solid rgba(245,158,11,0.2)'}}>
+                  <div style={{fontSize:9,color:tk.faint,marginBottom:4}}>RESTE (cumulé)</div>
+                  <div style={{fontSize:11,fontWeight:700,color:'#F59E0B'}}>{Math.round(totalReste).toLocaleString('fr-FR')} XAF</div>
+                </div>
               </div>
+
               <div style={{marginBottom:12}}>
                 <div style={{fontSize:10,color:tk.sub,marginBottom:6,fontWeight:600}}>Mode de paiement</div>
                 <div style={{display:'flex',gap:12}}>
@@ -3927,125 +4020,146 @@ const FournisseursPageInline = ({ fournisseurs, dark, langue, tk, cmup=0, onCrea
                   ))}
                 </div>
               </div>
-              <div style={{marginBottom:16}}>
-                <div style={{fontSize:10,color:tk.sub,marginBottom:4,fontWeight:600}}>Montant {payMode.toUpperCase()}</div>
-                <input type="text" inputMode="decimal" style={{...inputStyle,background:tk.cardB}} value={payMontant}
-                  onChange={e=>setPayMontant(e.target.value.replace(/[^0-9.]/g,''))}
-                  placeholder={`Montant en ${payMode.toUpperCase()}`}/>
+
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:10,color:tk.sub,marginBottom:4,fontWeight:600}}>MONTANT À PAYER ({payMode.toUpperCase()})</div>
+                <input type="text" inputMode="decimal" style={{...inputStyle,background:tk.cardB}} value={payMontantAPayer}
+                  onChange={e=>setPayMontantAPayer(e.target.value.replace(/[^0-9.]/g,''))}
+                  placeholder={`Montant total dû en ${payMode.toUpperCase()}`}/>
               </div>
+
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:10,color:tk.sub,marginBottom:4,fontWeight:600}}>MONTANT PAYÉ ({payMode.toUpperCase()})</div>
+                <input type="text" inputMode="decimal" style={{...inputStyle,background:tk.cardB}} value={payMontantPaye}
+                  onChange={e=>setPayMontantPaye(e.target.value.replace(/[^0-9.]/g,''))}
+                  placeholder={`Montant réglé en ${payMode.toUpperCase()}`}/>
+              </div>
+
+              <div style={{padding:'10px 12px',background:dark?'rgba(245,158,11,0.08)':'rgba(245,158,11,0.06)',borderRadius:8,marginBottom:14,border:'1px solid rgba(245,158,11,0.25)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:2}}>RESTE (calculé)</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#F59E0B'}}>{Math.round(resteCalc).toLocaleString('fr-FR')} {payMode.toUpperCase()}</div>
+              </div>
+
               <div style={{display:'flex',gap:8}}>
-                <button onClick={handlePay} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:'#22C55E',color:'#fff',cursor:'pointer',fontWeight:700}}>Confirmer paiement</button>
-                <button onClick={()=>{setShowPay(null);setPayMontant('');}} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer'}}>Annuler</button>
+                <button onClick={handlePay} disabled={loading} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:'#22C55E',color:'#fff',cursor:'pointer',fontWeight:700,opacity:loading?0.6:1}}>{loading?'…':'Confirmer paiement'}</button>
+                <button onClick={()=>{setShowPay(null);setPayMontantAPayer('');setPayMontantPaye('');}} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer'}}>Annuler</button>
               </div>
             </div>
           </div>
         );
       })()}
 
-      {/* Modal Extrait Fournisseur */}
-      {extraitData && extraitFournisseur && (
+      {/* Modal Extrait Fournisseur — type='payement_fournisseur' */}
+      {extraitData && extraitFournisseur && (() => {
+        const totals = extraitData.totals || {};
+        const totalAPayer = parseFloat(totals.total_a_payer || 0);
+        const totalPaye   = parseFloat(totals.total_paye   || 0);
+        const totalReste  = Math.max(0, totalAPayer - totalPaye);
+        const daily       = extraitData.daily || [];
+        const txs         = extraitData.transactions || [];
+        return (
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
-          <div style={{background:tk.card,borderRadius:16,padding:24,width:'92%',maxWidth:620,maxHeight:'85vh',overflow:'auto',border:`1px solid ${tk.border}`}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+          <div style={{background:tk.card,borderRadius:16,padding:24,width:'92%',maxWidth:760,maxHeight:'88vh',overflow:'auto',border:`1px solid ${tk.border}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:14}}>
               <div>
                 <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>{extraitFournisseur.nom}{extraitFournisseur.prenom?` ${extraitFournisseur.prenom}`:''}</h3>
-                <div style={{fontSize:11,color:tk.faint}}>Fournisseur · Extrait de compte</div>
+                <div style={{fontSize:11,color:tk.faint}}>Fournisseur · Extrait de compte (paiements fournisseur)</div>
               </div>
-              <button onClick={()=>setExtraitData(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
+              <button onClick={()=>{setExtraitData(null);setExtraitFournisseur(null);}} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
             </div>
-            {/* Récap */}
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
-              <div style={{background:dark?'rgba(59,130,246,0.1)':'rgba(59,130,246,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(59,130,246,0.2)'}}>
-                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>À ACHETER</div>
-                <div style={{fontSize:13,fontWeight:800,color:'#3B82F6'}}>{Math.round(extraitData.totals?.total_montant||0).toLocaleString('fr-FR')} XAF</div>
-              </div>
-              <div style={{background:dark?'rgba(34,197,94,0.1)':'rgba(34,197,94,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(34,197,94,0.2)'}}>
-                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>PAYÉ</div>
-                <div style={{fontSize:13,fontWeight:800,color:'#22C55E'}}>{Math.round(extraitData.totals?.total_montant_paye||0).toLocaleString('fr-FR')} XAF</div>
-              </div>
-              <div style={{background:dark?'rgba(245,158,11,0.1)':'rgba(245,158,11,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(245,158,11,0.2)'}}>
-                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>RESTE À PAYER</div>
-                <div style={{fontSize:13,fontWeight:800,color:'#F59E0B'}}>{Math.round(extraitData.totals?.total_montant_reste||0).toLocaleString('fr-FR')} XAF</div>
-              </div>
-            </div>
-            <div style={{fontSize:11,color:tk.sub,marginBottom:10}}>{(extraitData.transactions||[]).length} transaction(s)</div>
-            {(extraitData.transactions||[]).length===0?(
-              <div style={{textAlign:'center',padding:'20px 0',color:tk.faint,fontSize:12}}>Aucune transaction</div>
-            ):(extraitData.transactions||[]).map((tx,i)=>{
-              const montantTotal = parseFloat(tx.montant||0);
-              const montantPaye = parseFloat(tx.montant_paye||0);
-              const montantReste = parseFloat(tx.montant_reste||montantTotal - montantPaye);
-              return (
-                <div key={i} style={{display:'grid',gridTemplateColumns:'90px 1fr 80px 80px 60px',alignItems:'center',gap:8,padding:'8px 0',borderBottom:`1px solid ${tk.border}`,fontSize:11}}>
-                  <span style={{color:tk.faint}}>{tx.date?new Date(tx.date).toLocaleDateString('fr-FR'):'—'}</span>
-                  <div>
-                    <span style={{color:tk.ink,fontWeight:600,textTransform:'capitalize'}}>{tx.type} — {tx.devise||'—'}</span>
-                    <div style={{fontSize:9,color:tk.faint}}>{tx.payment_status||'—'}</div>
-                  </div>
-                  <span style={{fontWeight:700,color:tk.accent,textAlign:'right'}}>{Math.round(montantTotal).toLocaleString('fr-FR')}</span>
-                  <span style={{fontWeight:600,color:'#22C55E',textAlign:'right'}}>{Math.round(montantPaye).toLocaleString('fr-FR')}</span>
-                  <div style={{display:'flex',gap:4,justifyContent:'flex-end'}}>
-                    {montantReste > 0 && (
-                      <>
-                        <span style={{fontWeight:600,color:'#F59E0B',textAlign:'right'}}>{Math.round(montantReste).toLocaleString('fr-FR')}</span>
-                        <button onClick={()=>{setPaymentTx(tx);setPaymentAmount('');setPaymentMode('XAF');}} title="Payer" style={{background:'none',border:'none',cursor:'pointer',color:tk.accent,fontSize:11,fontWeight:600}}>Payer</button>
-                      </>
-                    )}
-                    {montantReste <= 0 && <span style={{color:'#22C55E',fontSize:9}}>✓</span>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
-      {/* Modal Paiement Fournisseur */}
-      {paymentTx && extraitFournisseur && (
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
-          <div style={{background:tk.card,borderRadius:16,padding:24,width:380,border:`1px solid ${tk.border}`}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
-              <h3 style={{margin:0,fontSize:14,fontWeight:800,color:tk.ink}}>Payer le fournisseur</h3>
-              <button onClick={()=>setPaymentTx(null)} style={{background:'none',border:'none',cursor:'pointer',color:tk.faint}}><X size={16}/></button>
-            </div>
-            <div style={{marginBottom:14,fontSize:12,color:tk.sub}}>
-              <div>Fournisseur: <span style={{fontWeight:700,color:tk.ink}}>{extraitFournisseur.nom}</span></div>
-              <div>Transaction: <span style={{fontWeight:700,color:tk.accent}}>{paymentTx.type}</span> — {new Date(paymentTx.date).toLocaleDateString('fr-FR')}</div>
-              <div style={{marginTop:8}}>
-                <span style={{color:tk.faint}}>Montant:</span> <span style={{fontWeight:700,fontSize:13,color:tk.accent}}>{Math.round(parseFloat(paymentTx.montant||0)).toLocaleString('fr-FR')} XAF</span>
+            {/* Filtre par date */}
+            <div style={{display:'flex',gap:8,alignItems:'flex-end',marginBottom:14,flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>DU</div>
+                <input type="date" value={extraitDateDebut} onChange={e=>setExtraitDateDebut(e.target.value)} style={{...inputStyle,width:160}}/>
               </div>
               <div>
-                <span style={{color:tk.faint}}>Reste à payer:</span> <span style={{fontWeight:700,fontSize:13,color:'#F59E0B'}}>{Math.round(parseFloat(paymentTx.montant_reste||0)).toLocaleString('fr-FR')} XAF</span>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>AU</div>
+                <input type="date" value={extraitDateFin} onChange={e=>setExtraitDateFin(e.target.value)} style={{...inputStyle,width:160}}/>
+              </div>
+              <button onClick={reloadExtrait} style={{padding:'9px 14px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontSize:11,fontWeight:700}}>Filtrer</button>
+              <button onClick={()=>{setExtraitDateDebut('');setExtraitDateFin('');handleExtrait(extraitFournisseur);}} style={{padding:'9px 14px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:11}}>Tout voir</button>
+            </div>
+
+            {/* Récap totaux */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
+              <div style={{background:dark?'rgba(59,130,246,0.1)':'rgba(59,130,246,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(59,130,246,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>MONTANT À PAYER</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#3B82F6'}}>{Math.round(totalAPayer).toLocaleString('fr-FR')} XAF</div>
+              </div>
+              <div style={{background:dark?'rgba(34,197,94,0.1)':'rgba(34,197,94,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(34,197,94,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>MONTANT PAYÉ</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#22C55E'}}>{Math.round(totalPaye).toLocaleString('fr-FR')} XAF</div>
+              </div>
+              <div style={{background:dark?'rgba(245,158,11,0.1)':'rgba(245,158,11,0.07)',borderRadius:10,padding:'10px 14px',border:'1px solid rgba(245,158,11,0.2)'}}>
+                <div style={{fontSize:10,color:tk.faint,marginBottom:4}}>RESTE</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#F59E0B'}}>{Math.round(totalReste).toLocaleString('fr-FR')} XAF</div>
               </div>
             </div>
-            <div style={{marginBottom:12}}>
-              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MONTANT À PAYER *</div>
-              <input 
-                type="number" 
-                value={paymentAmount} 
-                onChange={e=>setPaymentAmount(e.target.value)} 
-                placeholder="0"
-                style={{...inputStyle,fontSize:14,fontWeight:600}}
-              />
+
+            {/* Ventilation par jour */}
+            <div style={{marginBottom:18}}>
+              <div style={{fontSize:11,fontWeight:700,color:tk.ink,marginBottom:8,letterSpacing:0.5}}>VENTILATION PAR JOUR</div>
+              {daily.length === 0 ? (
+                <div style={{textAlign:'center',padding:'14px 0',color:tk.faint,fontSize:12}}>Aucun paiement sur la période</div>
+              ) : (
+                <div style={{overflowX:'auto'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                    <thead><tr style={{borderBottom:`1px solid ${tk.border}`}}>
+                      {['Date','Nb','À payer','Payé','Reste'].map((h,i)=>(
+                        <th key={i} style={{padding:'6px 10px',textAlign:i===0?'left':'right',color:tk.faint,fontSize:9,fontWeight:700,letterSpacing:0.5}}>{h.toUpperCase()}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {daily.map((d,idx)=>{
+                        const aPay = parseFloat(d.total_a_payer||0);
+                        const paye = parseFloat(d.total_paye||0);
+                        const r    = Math.max(0, aPay - paye);
+                        return (
+                          <tr key={idx} style={{borderBottom:`1px solid ${tk.border}`}}>
+                            <td style={{padding:'7px 10px',color:tk.ink,fontWeight:600}}>{d.jour ? new Date(d.jour).toLocaleDateString('fr-FR') : '—'}</td>
+                            <td style={{padding:'7px 10px',textAlign:'right',color:tk.sub}}>{d.nb_paiements||0}</td>
+                            <td style={{padding:'7px 10px',textAlign:'right',fontWeight:700,color:'#3B82F6'}}>{Math.round(aPay).toLocaleString('fr-FR')}</td>
+                            <td style={{padding:'7px 10px',textAlign:'right',fontWeight:700,color:'#22C55E'}}>{Math.round(paye).toLocaleString('fr-FR')}</td>
+                            <td style={{padding:'7px 10px',textAlign:'right',fontWeight:700,color:r>0?'#F59E0B':'#22C55E'}}>{Math.round(r).toLocaleString('fr-FR')}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
-            <div style={{marginBottom:12}}>
-              <div style={{fontSize:10,color:tk.faint,marginBottom:4,fontWeight:600}}>MODE DE PAIEMENT</div>
-              <select 
-                value={paymentMode} 
-                onChange={e=>setPaymentMode(e.target.value)}
-                style={{...inputStyle}}
-              >
-                <option value="XAF">XAF (Espèces)</option>
-                <option value="USDT">USDT (Crypto)</option>
-              </select>
-            </div>
-            <div style={{display:'flex',gap:8}}>
-              <button onClick={handlePaymentFournisseur} disabled={loading || !paymentAmount} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:tk.accent,color:'#0A1628',cursor:'pointer',fontWeight:700,fontSize:12,opacity:loading||!paymentAmount?0.6:1}}>{loading?'…':'Enregistrer'}</button>
-              <button onClick={()=>setPaymentTx(null)} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${tk.border}`,background:'none',color:tk.sub,cursor:'pointer',fontSize:12}}>Annuler</button>
+
+            {/* Détail des paiements */}
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:tk.ink,marginBottom:8,letterSpacing:0.5}}>DÉTAIL DES PAIEMENTS ({txs.length})</div>
+              {txs.length === 0 ? (
+                <div style={{textAlign:'center',padding:'14px 0',color:tk.faint,fontSize:12}}>Aucun paiement</div>
+              ) : txs.map((tx,i)=>{
+                const aPay = parseFloat(tx.montant_a_payer||tx.montant||0);
+                const paye = parseFloat(tx.montant_paye||0);
+                const r    = Math.max(0, aPay - paye);
+                return (
+                  <div key={i} style={{display:'grid',gridTemplateColumns:'90px 1fr 90px 90px 90px 50px',alignItems:'center',gap:8,padding:'8px 0',borderBottom:`1px solid ${tk.border}`,fontSize:11}}>
+                    <span style={{color:tk.faint}}>{tx.date ? new Date(tx.date).toLocaleDateString('fr-FR') : '—'}</span>
+                    <div>
+                      <span style={{color:tk.ink,fontWeight:600,fontSize:10,textTransform:'uppercase'}}>{tx.mode_paiement||'XAF'}</span>
+                      {tx.notes && <div style={{fontSize:9,color:tk.faint}}>{tx.notes}</div>}
+                    </div>
+                    <span style={{fontWeight:700,color:'#3B82F6',textAlign:'right'}}>{Math.round(aPay).toLocaleString('fr-FR')}</span>
+                    <span style={{fontWeight:700,color:'#22C55E',textAlign:'right'}}>{Math.round(paye).toLocaleString('fr-FR')}</span>
+                    <span style={{fontWeight:700,color:r>0?'#F59E0B':'#22C55E',textAlign:'right'}}>{Math.round(r).toLocaleString('fr-FR')}</span>
+                    <span style={{textAlign:'right',color:r<=0?'#22C55E':tk.faint,fontSize:11}}>{r<=0?'✓':'—'}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

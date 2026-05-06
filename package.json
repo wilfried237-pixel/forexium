@@ -7,5 +7,14 @@
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
+  },
+  "dependencies": {
+    "date-fns": "^4.1.0",
+    "jspdf": "^4.2.1",
+    "lucide-react": "^1.14.0",
+    "qrcode-generator": "^2.0.4",
+    "react": "^19.2.6",
+    "recharts": "^3.8.1",
+    "sonner": "^2.0.7"
   }
 }

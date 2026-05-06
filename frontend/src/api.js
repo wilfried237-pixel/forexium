@@ -1,6 +1,8 @@
 // ============================================================
 // FOREXIUM v5.7.0+ — Service API (Frontend → Backend)
-// Avec support des paiements clients et fournisseurs
+// Tous les paiements sont des transactions de type
+//   'payement_client' ou 'payement_fournisseur'
+// (les tables payment_history* ont été supprimées)
 // ============================================================
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
@@ -14,6 +16,15 @@ const handle = async (res) => {
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || json.message || `Erreur ${res.status}`);
   return json;
+};
+
+const qs = (obj) => {
+  const s = new URLSearchParams();
+  Object.entries(obj || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') s.append(k, v);
+  });
+  const out = s.toString();
+  return out ? `?${out}` : '';
 };
 
 // ── AUTH ─────────────────────────────────────────────────────
@@ -50,6 +61,10 @@ export const apiUpdateSetting = async (key, valeur) => handle(await fetch(`${BAS
 export const apiUpdateProfitShare = async (porteur, associe) => Promise.all([apiUpdateSetting('profit_share_porteur',String(porteur)),apiUpdateSetting('profit_share_associe',String(associe))]);
 
 // ── CLIENTS ──────────────────────────────────────────────────
+//   Le GET /accounts/clients renvoie déjà :
+//     total_a_payer  = SUM(montant)      WHERE type='payement_client'
+//     total_paye     = SUM(montant_paye) WHERE type='payement_client'
+//     reste          = total_a_payer - total_paye
 export const apiGetClients = async () => handle(await fetch(`${BASE_URL}/accounts/clients`, {headers:headers()}));
 
 export const apiCreateClient = async (nom, telephone, adresse, prenom='') =>
@@ -66,37 +81,35 @@ export const apiUpdateClient = async (clientId, data) =>
 export const apiDeleteClient = async (clientId) =>
   handle(await fetch(`${BASE_URL}/accounts/clients/${clientId}`, {method:'DELETE', headers:headers()}));
 
-export const apiGetClientExtrait = async (clientId) => {
-  // Endpoint dédié pour récupérer l'extrait détaillé du client
-  try {
-    return handle(await fetch(`${BASE_URL}/payments/clients/${clientId}/account`, {headers:headers()}));
-  } catch (err) {
-    // Fallback: récupérer les transactions
-    const res = await fetch(`${BASE_URL}/transactions?limit=500`, {headers:headers()});
-    const data = await handle(res);
-    return { transactions: data.transactions || [], totals: {} };
-  }
-};
-
-// ── PAIEMENTS CLIENTS (NOUVEAU) ──────────────────────────────
 /**
- * Récupère l'extrait de compte détaillé d'un client
- * Retourne: { client, transactions, totals }
+ * Extrait de compte d'un client (filtré sur type='payement_client').
+ * Renvoie : { extrait, transactions, daily, totals }
+ *   - daily   : ventilation par jour { jour, total_a_payer, total_paye, reste }
+ *   - totals  : totaux globaux sur la période
  */
-export const apiGetClientPaymentAccount = async (clientId) =>
-  handle(await fetch(`${BASE_URL}/payments/clients/${clientId}/account`, {headers:headers()}));
+export const apiGetClientExtrait = async (clientId, dateDebut=null, dateFin=null) =>
+  handle(await fetch(
+    `${BASE_URL}/accounts/extrait/clients/${clientId}${qs({date_debut: dateDebut, date_fin: dateFin})}`,
+    {headers:headers()}
+  ));
 
 /**
- * Enregistre un paiement partiel pour une transaction client
+ * Enregistre un paiement client : crée une transaction de type 'payement_client'
+ *   avec montant=montant_a_payer, montant_paye=montant_paye, reste=montant_a_payer-montant_paye.
  */
-export const apiPaymentClientTransaction = async (clientId, transactionId, montantPaye, devisePaiement='XAF') =>
-  handle(await fetch(`${BASE_URL}/payments/clients/${clientId}/transaction/${transactionId}`, {
-    method:'POST',
-    headers:headers(),
-    body:JSON.stringify({montant_paye: montantPaye, devise_paiement: devisePaiement})
+export const apiPayClient = async (clientId, montantAPayer, montantPaye, modePaiement='xaf', notes=null) =>
+  handle(await fetch(`${BASE_URL}/accounts/clients/${clientId}/payment`, {
+    method:'POST', headers:headers(),
+    body:JSON.stringify({
+      montant_a_payer: montantAPayer,
+      montant_paye:    montantPaye,
+      mode_paiement:   modePaiement,
+      notes,
+    }),
   }));
 
 // ── FOURNISSEURS ─────────────────────────────────────────────
+//   Mêmes agrégats : total_a_payer / total_paye / reste sur type='payement_fournisseur'.
 export const apiGetFournisseurs = async () => handle(await fetch(`${BASE_URL}/accounts/fournisseurs`, {headers:headers()}));
 
 export const apiCreateFournisseur = async (nom, telephone, adresse, prenom='') =>
@@ -113,60 +126,32 @@ export const apiUpdateFournisseur = async (fournisseurId, data) =>
 export const apiDeleteFournisseur = async (fournisseurId) =>
   handle(await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}`, {method:'DELETE', headers:headers()}));
 
-export const apiFournisseurPayment = async (fournisseurId, mode, montant) =>
-  handle(await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}/payment`, {
-    method:'POST', headers:headers(), body:JSON.stringify({mode, montant}),
-  }));
-
-export const apiGetFournisseurExtrait = async (fournisseurId) => {
-  try {
-    // Essai d'abord l'endpoint dédié de paiements
-    return handle(await fetch(`${BASE_URL}/payments/fournisseurs/${fournisseurId}/account`, {headers:headers()}));
-  } catch (err) {
-    // Fallback
-    const res = await fetch(`${BASE_URL}/transactions?limit=500`, {headers:headers()});
-    const data = await handle(res);
-    return {
-      transactions: data.transactions || [],
-      paymentHistory: [],
-      totals: {},
-    };
-  }
-};
-
-// ── PAIEMENTS FOURNISSEURS (NOUVEAU) ────────────────────────
 /**
- * Récupère l'extrait de compte détaillé d'un fournisseur
- * Retourne: { fournisseur, transactions, paymentHistory, totals }
+ * Enregistre un paiement fournisseur : crée une transaction de type 'payement_fournisseur'.
+ *   - montant      = montant_a_payer
+ *   - montant_paye = montant_paye
+ *   - mode         = 'xaf' ou 'usdt'
  */
-export const apiGetFournisseurPaymentAccount = async (fournisseurId) =>
-  handle(await fetch(`${BASE_URL}/payments/fournisseurs/${fournisseurId}/account`, {headers:headers()}));
+export const apiFournisseurPayment = async (fournisseurId, mode, montantAPayer, montantPaye=null, notes=null) =>
+  handle(await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}/payment`, {
+    method:'POST', headers:headers(),
+    body:JSON.stringify({
+      montant_a_payer: montantAPayer,
+      montant_paye:    montantPaye !== null ? montantPaye : montantAPayer,
+      mode_paiement:   mode,
+      notes,
+    }),
+  }));
 
 /**
- * Enregistre un paiement au fournisseur
- * @param fournisseurId - ID du fournisseur
- * @param montant - Montant à payer
- * @param devise - 'XAF' ou 'USDT'
- * @param transactionId - (optionnel) ID de la transaction pour lier le paiement
+ * Extrait de compte d'un fournisseur (filtré sur type='payement_fournisseur').
+ * Renvoie : { extrait, transactions, daily, totals }
  */
-export const apiPayFournisseur = async (fournisseurId, montant, devise='XAF', transactionId=null) =>
-  handle(await fetch(`${BASE_URL}/payments/fournisseurs/${fournisseurId}/pay`, {
-    method:'POST',
-    headers:headers(),
-    body:JSON.stringify({montant, devise, transaction_id: transactionId})
-  }));
-
-// ── PAIEMENTS CLIENTS (ancienne API) ────────────────────────
-export const apiPayClient = async (clientId, transaction_id, montant_paye, mode_paiement='XAF') =>
-  handle(await fetch(`${BASE_URL}/accounts/clients/${clientId}/payment`, {
-    method:'PUT', headers:headers(), body:JSON.stringify({transaction_id, montant_paye, mode_paiement}),
-  }));
-
-// ── PAIEMENTS FOURNISSEURS (ancienne API) ──────────────────
-export const apiPayFournisseurOld = async (fournisseurId, transaction_id, montant_paye, mode_paiement='XAF') =>
-  handle(await fetch(`${BASE_URL}/accounts/fournisseurs/${fournisseurId}/payment`, {
-    method:'PUT', headers:headers(), body:JSON.stringify({transaction_id, montant_paye, mode_paiement}),
-  }));
+export const apiGetFournisseurExtrait = async (fournisseurId, dateDebut=null, dateFin=null) =>
+  handle(await fetch(
+    `${BASE_URL}/accounts/extrait/fournisseurs/${fournisseurId}${qs({date_debut: dateDebut, date_fin: dateFin})}`,
+    {headers:headers()}
+  ));
 
 // ── DEVISES ──────────────────────────────────────────────────
 export const apiGetDevises = async () => handle(await fetch(`${BASE_URL}/devises`, {headers:headers()}));
